@@ -91,9 +91,8 @@ print:
 
     syscall
 
-    mov r12, NEW_LINE
     mov rdx, 1
-    mov rsi, r12
+    mov rsi, 10
     mov rax, SYS_WRITE
     mov rdi, STD_OUT
     syscall
