@@ -1,2 +1,2 @@
-all:
-	g++ -std=c++14 -Wall -Wextra -g -O2 -o main main.cpp
+asm:
+	nasm -f elf64 -o render.o render.asm && ld -o render render.o

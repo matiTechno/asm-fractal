@@ -1,3 +1,7 @@
-main
-ref-render.ppm
-render.ppm
+c-reference/fractal.ppm
+c-reference/render
+render.o
+render
+fractal.ppm
+*/test.o
+*/test

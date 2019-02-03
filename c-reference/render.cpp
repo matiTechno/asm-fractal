@@ -63,7 +63,7 @@ int main()
     }
 
 
-    int fd = open("ref-render.ppm", O_WRONLY | O_TRUNC | O_CREAT,
+    int fd = open("fractal.ppm", O_WRONLY | O_TRUNC | O_CREAT,
                   S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
     assert(fd != -1);
 
