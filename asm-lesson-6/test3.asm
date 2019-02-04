@@ -30,23 +30,32 @@ print:
     lodsb
     push rsi
     push rax
-    jmp print_one_char
-
-exit_print_one_char:
-
+    call print_one_char
     pop rax
     pop rsi
 
     jmp print
 
 print_return:
+
+    ; print new line
+    mov r11, 0xa
+    push r11
+    call print_one_char
+    pop r11
+
     ret
 
 print_one_char:
     mov rax, 1
     mov rdi, 1
+
+    add rsp, 8  ; stack now points at the function return address
+                ; we move back to grab a character pushed on stack
+                ; I hope my reasoning is fine here
     mov rsi, rsp
+    sub rsp, 8
+
     mov rdx, 1
     syscall
-
-    jmp exit_print_one_char
+    ret
