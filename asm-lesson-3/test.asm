@@ -51,8 +51,13 @@ print_result:
     jmp print_new_line
 
 print_new_line: ; I don't know why but it does not work
+                ; ok - fixed, we have to put address in rsi not the value
     mov rdx, 1
+
     mov rsi, 10
+    push rsi
+    mov rsi, rsp
+
     mov rax, 1
     mov rdi, 1
     syscall

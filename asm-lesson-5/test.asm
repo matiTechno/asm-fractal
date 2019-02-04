@@ -17,6 +17,7 @@ _start:
 
     mov rax, 0
     movq xmm0, [result]
+    ; call printf now
 
     mov rax, 60
     mov rdi, 0
