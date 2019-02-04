@@ -1,27 +1,21 @@
-; program that prints command line arguments
-; it crashes...
-; I have no idea why
-; I don't even know how to debug it...
+; program that prints command line arguments - echo
 
 global _start
 extern puts
 
     section .text
 _start:
-    pop r10 ; argc
-    pop r11 ; argv
+    pop r12    ; argc
+    pop rax    ; skip argv[0];
 
 begin:
-    push rax ; align to 16 bytes
+    dec r12
+    jz end
 
-    mov rdi, [r11]
+    pop rdi ; argv[...]
     call puts
     
-    pop rax
-
-    add r11, 8
-    dec r10
-    jnz begin
+    jmp begin
 
 end:
     mov rax, 60
