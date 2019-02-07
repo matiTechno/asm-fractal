@@ -1,3 +1,4 @@
+; sum floats from a buffer; rsi - number of floats, rdi - buffer
     section .text
 sum:
     xorpd xmm0, xmm0

@@ -7,7 +7,7 @@
             /lib/ld-linux-x86-64.so.2
 
 3:
-	nasm -f elf64 -o test.o test3.asm && ld -o test test.o
+	nasm -f elf64 -g -F dwarf -o test.o test3.asm && ld -g -o test test.o
 
 4:
 	nasm -f elf64 -o test.o test4.asm && gcc -o test test.o
@@ -21,4 +21,8 @@
 
 7:
 	nasm -f elf64 -o test.o test7.asm && ld -o test test.o -lc -dynamic-linker \
+            /lib/ld-linux-x86-64.so.2
+
+8:
+	nasm -f elf64 -o test.o test8.asm && ld -o test test.o -lc -dynamic-linker \
             /lib/ld-linux-x86-64.so.2
