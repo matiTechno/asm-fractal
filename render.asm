@@ -5,7 +5,7 @@ fd resd 1
 
 section .data
 
-filename db "fractal.ppm", 0
+filename db "render.ppm", 0
 tmp_header db "P6 640 480 255 "
 tmp_header_size dw 15
 
@@ -42,7 +42,7 @@ render:
     mov rax, 1
     mov edi, dword [fd]
     mov rsi, tmp_header
-    mov edx, [tmp_header_size]
+    movzx edx, word [tmp_header_size]
     syscall
 
     ; write to file - buffer
