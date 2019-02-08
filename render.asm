@@ -5,9 +5,9 @@ fd resd 1
 
 section .data
 
-filename db "render.ppm", 0
+filename db "fractal.ppm", 0
 tmp_header db "P6 640 480 255 "
-tmp_header_size dw 15
+tmp_header_size dd 15
 
 global _start
 
@@ -23,7 +23,7 @@ _start:
 render:
     mov byte [rax], 255
     mov byte [rax + 1], 0
-    mov byte [rax + 2], 255
+    mov byte [rax + 2], 0
 
     add rax, 3
     cmp rax, buffer + 640 * 480 * 3
@@ -42,7 +42,8 @@ render:
     mov rax, 1
     mov edi, dword [fd]
     mov rsi, tmp_header
-    movzx edx, word [tmp_header_size]
+    ; high 32 bits of rax are cleard to 0, there is not movzx for dword
+    mov edx, dword [tmp_header_size]
     syscall
 
     ; write to file - buffer
