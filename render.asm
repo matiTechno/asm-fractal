@@ -5,7 +5,7 @@ fd resd 1
 
 section .data
 
-filename db "render.ppm", 0
+filename db "fractal.ppm", 0
 tmp_header db "P6 640 480 255 "
 tmp_header_size dw 15
 
