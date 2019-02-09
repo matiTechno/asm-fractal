@@ -35,8 +35,6 @@ render_px:
     ; setting the dividend is quite tricky
     mov edx, 0
     mov eax, r10d
-
-
     mov edi, 640
     div edi
 
@@ -129,7 +127,6 @@ loop_iter:
     addss xmm6, xmm0
     ; xmm4 and xmm5 can be reused at this point, xmm6 is temp variable
     mulss xmm3, [float_two]
-    mulss xmm3, xmm3
     mulss xmm3, xmm2
     addss xmm3, xmm1
     movss xmm2, xmm6
