@@ -69,24 +69,16 @@ int main()
 
     char buf[1024];
     {
-        snprintf(buf, sizeof(buf), "P3 %d %d 255", config.render_width,
+        snprintf(buf, sizeof(buf), "P6 %d %d 255 ", config.render_width,
                  config.render_height);
 
         int len = strlen(buf);
         assert(write(fd, buf, len) == len);
     }
 
-    for(int idx = 0; idx < pixel_count; ++idx)
-    {
-        char* color_comp = &image_buf[idx].r;
+    int byte_size = sizeof(Color) * pixel_count;
 
-        for(int i = 0; i < 3; ++i, ++color_comp)
-        {
-            snprintf(buf, sizeof(buf), " %d", *color_comp);
-            int len = strlen(buf);
-            assert(write(fd, buf, len) == len);
-        }
-    }
+    assert(write(fd, image_buf, byte_size) == byte_size);
 
     free(image_buf);
     close(fd);
