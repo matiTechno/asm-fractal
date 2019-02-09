@@ -142,7 +142,18 @@ end_loop_iter:
     cvtsi2ss xmm1, [iterations]
     divss xmm0, xmm1
     mulss xmm0, [float_max_u8]
-    addss xmm0, [float_half]
+
+    ; oh man, what a bug - cvtss2si is performing rounding so we don't have to
+    ; add 0.5 to the color value - if we do this when color == 255 we overflow and
+    ; actually invert the color
+    ; commenting out this instruction
+    ; I'm glad I did c-reference version to compare the intermediate results,
+    ; without this I don't know if I would complete this program.
+    ; (I did not debug the C program disassembly, just inspected variables and compared
+    ; with registers in this program)
+
+    ;addss xmm0, [float_half]
+
     cvtss2si eax, xmm0
 
     mov byte [buffer + r10 * 3]    , al
