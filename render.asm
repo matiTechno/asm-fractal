@@ -1,6 +1,6 @@
 section .bss
 
-buffer resb 640 * 480 * 3
+buffer resq 1
 fd resd 1
 
 section .data
@@ -23,10 +23,22 @@ float_half   dd 0.5
 float_four   dd 4.0
 float_two    dd 2.0
 
+
 global _start
 
 section .text
 _start:
+
+    ; allocate the image buffer with sys_mmap
+    mov rax, 9
+    mov rdi, 0 ; address - null
+    mov rsi, 640 * 480 * 3 ; size
+    mov rdx, 0x3 ; permission - read | write
+    mov r10, 0x22 ; flags - private | anonymous
+    mov r8, -1 ; fd - must be -1 when anonymous flag is set
+    mov r9, 0 ; offset - must be 0 when anonymous flag is set
+    syscall
+    mov qword [buffer], rax ; store the address returned by sys_mmap
 
     mov r10d, 0
 
@@ -154,11 +166,21 @@ end_loop_iter:
 
     ;addss xmm0, [float_half]
 
-    cvtss2si eax, xmm0
+    cvtss2si esi, xmm0
 
-    mov byte [buffer + r10 * 3]    , al
-    mov byte [buffer + r10 * 3 + 1], al
-    mov byte [buffer + r10 * 3 + 2], al
+    ; calculate the address of the pixel
+    ; offset
+    ; note: if the result is to big to fit into the eax, higher bits are stored in edx
+    mov eax, r10d
+    mov edi, 3
+    mul edi
+    ; address
+    mov rdi, [buffer]
+    add rdi, rax
+
+    mov byte [rdi]    , sil
+    mov byte [rdi + 1], sil
+    mov byte [rdi + 2], sil
 
     inc r10d
     cmp r10d, 640 * 480
@@ -184,7 +206,7 @@ end_loop_iter:
     ; write to file - buffer
     mov rax, 1
     mov edi, dword [fd]
-    mov rsi, buffer
+    mov rsi, [buffer]
     mov rdx, 640 * 480 * 3
     syscall
 
