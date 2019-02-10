@@ -1,13 +1,24 @@
 section .bss
 
+; important notes:
+; * higher bits of e.g rax are cleared when a value is moved in to the eax
+; * sizes of the string constants are hardcoded - so be careful when changing
+;   strings, I should fix this in the future, do something more robust
+
+; maybe I could store these on stack but I find it more convenient this way
 buffer resq 1
 fd resd 1
+image_width resd 1
+image_height resd 1
+string_buffer resb 1024 ; don't change the size - one function relies on it
 
 section .data
 
+msg_default db "rendering in a default resolution 640x480px", 0xa
+msg_error db "0 or 2 arguments required", 0xa
+msg_P6 db "P6 "
+
 filename db "fractal.ppm", 0
-tmp_header db "P6 640 480 255 "
-tmp_header_size dd 15
 
 view_left   dd -2.5
 view_right  dd 1.0
@@ -23,16 +34,65 @@ float_half   dd 0.5
 float_four   dd 4.0
 float_two    dd 2.0
 
-
 global _start
 
 section .text
 _start:
 
+    ; retrive width and height from command line arguments
+
+    pop rax ; argc
+    cmp rax, 1
+    je default_res
+    cmp rax, 3
+    je custom_res
+
+    ; error
+    mov rax, 1
+    mov rdi, 1
+    mov rsi, msg_error
+    mov rdx, 26
+    syscall
+    jmp exit
+
+default_res:
+
+    mov dword [image_width], 640
+    mov dword [image_height], 480
+    mov rax, 1
+    mov rdi, 1
+    mov rsi, msg_default
+    mov rdx, 44
+    syscall
+    jmp allocation
+
+custom_res:
+
+    ; todo: error checking
+    pop rax ; skip argc[0] (program name)
+    pop rax ; width
+    call str_to_int
+    mov dword [image_width], eax
+    pop rax ; height
+    call str_to_int
+    mov dword [image_height], eax
+    jmp allocation
+
+allocation:
+
     ; allocate the image buffer with sys_mmap
+
+    ; calculate required size
+    mov eax, dword [image_width]
+    mov edi, dword [image_height]
+    mul edi
+    mov edi, 3
+    mul edi
+    mov esi, eax ; store the results in rsi
+
     mov rax, 9
     mov rdi, 0 ; address - null
-    mov rsi, 640 * 480 * 3 ; size
+    ; rsi is already set - size
     mov rdx, 0x3 ; permission - read | write
     mov r10, 0x22 ; flags - private | anonymous
     mov r8, -1 ; fd - must be -1 when anonymous flag is set
@@ -40,14 +100,14 @@ _start:
     syscall
     mov qword [buffer], rax ; store the address returned by sys_mmap
 
-    mov r10d, 0
+    mov r10d, 0 ; pixel index
 
 render_px:
 
     ; setting the dividend is quite tricky
     mov edx, 0
     mov eax, r10d
-    mov edi, 640
+    mov edi, dword [image_width]
     div edi
 
     ; edx is the x coordinate of a pixel
@@ -55,9 +115,9 @@ render_px:
 
     cvtsi2ss xmm0, edx
     cvtsi2ss xmm1, eax 
-    mov eax, 640
+    mov eax, dword [image_width]
     cvtsi2ss xmm2, eax
-    mov edi, 480
+    mov edi, [image_height]
     cvtsi2ss xmm3, edi
 
     divss xmm0, xmm2
@@ -183,8 +243,12 @@ end_loop_iter:
     mov byte [rdi + 2], sil
 
     inc r10d
-    cmp r10d, 640 * 480
-    jne render_px
+    ; check if we iterated over all the pixels
+    mov eax, dword [image_width]
+    mov edi, dword [image_height]
+    mul edi
+    cmp r10d, eax
+    jne render_px ; if not go back
 
     ; open file
     mov rax, 2
@@ -198,16 +262,30 @@ end_loop_iter:
     ; write to file - header
     mov rax, 1
     mov edi, dword [fd]
-    mov rsi, tmp_header
-    ; high 32 bits of rax are cleard to 0, there is not movzx for dword
-    mov edx, dword [tmp_header_size]
+    mov rsi, msg_P6
+    mov rdx, 3
     syscall
 
+    mov eax, dword [image_width]
+    call write_int_space
+    mov eax, dword [image_height]
+    call write_int_space
+    mov eax, 255
+    call write_int_space
+
     ; write to file - buffer
+    ; calculate byte size
+    mov eax, dword [image_width]
+    mov edi, dword [image_height]
+    mul edi
+    mov edi, 3
+    mul edi
+    mov edx, eax
+
     mov rax, 1
     mov edi, dword [fd]
     mov rsi, [buffer]
-    mov rdx, 640 * 480 * 3
+    ; rdx is already set
     syscall
 
     ; close file
@@ -215,7 +293,74 @@ end_loop_iter:
     mov edi, dword [fd]
     syscall
     
-    ; exit
+exit:
     mov rax, 60
     mov rdi, 0
     syscall
+
+; rax should be set to address of the target string
+str_to_int:
+
+    mov rdi, rax
+    mov rsi, 10 ; multiplier
+    mov rax, 0  ; we store the result here
+    mov rbx, 0  ; see how we use bl - lowest byte of rbx - we zero out higher bytes
+
+str_to_int_loop:
+
+    cmp [rdi], byte 0
+    je str_to_int_return
+    mov bl, byte [rdi]
+    sub bl, 48
+    mul rsi
+    add rax, rbx
+    inc rdi
+    jmp str_to_int_loop
+
+
+str_to_int_return:
+    ret
+
+; arguments:
+; rdi - target file descriptor
+; rax - number to print
+; additionally one space is printed after the number
+
+write_int_space:
+
+    mov rbx, 10 ; divisor
+    mov r9, 0   ; length
+
+    ; note: we are writing the number in a reverse order
+    ; that's why we start at the last element of a buffer and traverse down
+
+    mov r15, string_buffer
+    add r15, 1023
+
+    mov byte [r15], 32 ; end the string with a space
+    inc r9
+
+write_int_space_loop:
+
+    ; higher 8 bytes of the dividend are stored in rdx - we set it to 0
+    ; (our dividend fits into rax and does not need to be extended to rdx)
+
+    mov rdx, 0 
+
+    ; lower 8 bytes are stored in rax and it is already set correctly by the caller
+
+    div rbx ; whole part - rax, reminder - rdx
+    add rdx, 48 ; convert to ascii
+    dec r15
+    mov byte [r15], dl ; write a character to a temporary buffer
+    inc r9
+    cmp rax, 0
+    jne write_int_space_loop
+
+    mov rax, 1 ; sys_write
+    ; rdi is set by the caller
+    mov rsi, r15
+    mov rdx, r9
+    syscall
+
+    ret

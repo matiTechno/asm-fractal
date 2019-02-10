@@ -92,10 +92,13 @@ print:
     syscall
 
     mov rdx, 1
-    mov rsi, 10
+    mov r10, 10
+    push r10
+    mov rsi, rsp
     mov rax, SYS_WRITE
     mov rdi, STD_OUT
     syscall
+    pop r10
 
     jmp exit
 
