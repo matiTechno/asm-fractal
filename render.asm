@@ -1,38 +1,38 @@
-section .bss
-
 ; important notes:
 ; * higher bits of e.g rax are cleared when a value is moved in to the eax
 ; * sizes of the string constants are hardcoded - so be careful when changing
 ;   strings, I should fix this in the future, do something more robust
 
+section .bss
+
 ; maybe I could store these on stack but I find it more convenient this way
-buffer resq 1
-fd resd 1
-image_width resd 1
-image_height resd 1
+
+buffer        resq 1
+fd            resd 1
+image_width   resd 1
+image_height  resd 1
 string_buffer resb 1024 ; don't change the size - one function relies on it
 
 section .data
 
-msg_default db "rendering in a default resolution 640x480px", 0xa
-msg_error db "0 or 2 arguments required", 0xa
-msg_P6 db "P6 "
+msg_default db "rendering at a default resolution 1920x1080px", 0xa
+msg_error   db "0 or 2 arguments required", 0xa
+msg_P6      db "P6 "
+filename    db "fractal.ppm", 0
 
-filename db "fractal.ppm", 0
+iterations  dd 800
 
-view_left   dd -2.5
-view_right  dd 1.0
-view_top    dd 1.0
-view_bottom dd -1.0
+view_left   dq -0.711580
+view_right  dq -0.711562
+view_top    dq  0.252133
+view_bottom dq  0.252143
 
-iterations  dd 100
-
-float_one    dd 1.0
-float_zero   dd 0.0
-float_max_u8 dd 255.0
-float_half   dd 0.5
-float_four   dd 4.0
-float_two    dd 2.0
+double_one    dq 1.0
+double_zero   dq 0.0
+double_max_u8 dq 255.0
+double_half   dq 0.5
+double_four   dq 4.0
+double_two    dq 2.0
 
 global _start
 
@@ -57,12 +57,12 @@ _start:
 
 default_res:
 
-    mov dword [image_width], 640
-    mov dword [image_height], 480
+    mov dword [image_width], 1920
+    mov dword [image_height], 1080
     mov rax, 1
     mov rdi, 1
     mov rsi, msg_default
-    mov rdx, 44
+    mov rdx, 46
     syscall
     jmp allocation
 
@@ -113,15 +113,15 @@ render_px:
     ; edx is the x coordinate of a pixel
     ; eax is the y coordinate of a pixel
 
-    cvtsi2ss xmm0, edx
-    cvtsi2ss xmm1, eax 
+    cvtsi2sd xmm0, edx
+    cvtsi2sd xmm1, eax 
     mov eax, dword [image_width]
-    cvtsi2ss xmm2, eax
+    cvtsi2sd xmm2, eax
     mov edi, [image_height]
-    cvtsi2ss xmm3, edi
+    cvtsi2sd xmm3, edi
 
-    divss xmm0, xmm2
-    divss xmm1, xmm3
+    divsd xmm0, xmm2
+    divsd xmm1, xmm3
 
     ; xmm0 - x range scaling factor
     ; xmm1 - y range scaling factor
@@ -129,16 +129,16 @@ render_px:
     ; calculate x0 and y0 position in target range using linear interpolation
 
     ; x0
-    movss xmm2, [float_one]
-    subss xmm2, xmm0
-    movss xmm3, [view_left]
-    mulss xmm2, xmm3
+    movsd xmm2, [double_one]
+    subsd xmm2, xmm0
+    movsd xmm3, [view_left]
+    mulsd xmm2, xmm3
     ; xmm2 is reserved now
-    movss xmm3, xmm0
-    movss xmm4, [view_right]
-    mulss xmm3, xmm4
-    addss xmm2, xmm3
-    movss xmm0, xmm2 ; we don't need x scaling factor anymore
+    movsd xmm3, xmm0
+    movsd xmm4, [view_right]
+    mulsd xmm3, xmm4
+    addsd xmm2, xmm3
+    movsd xmm0, xmm2 ; we don't need x scaling factor anymore
 
     ; now xmm0 contains x0
 
@@ -146,21 +146,21 @@ render_px:
     ; do the same for y0
 
     ; y0
-    movss xmm2, [float_one]
-    subss xmm2, xmm1
-    movss xmm3, [view_top]
-    mulss xmm2, xmm3
-    movss xmm3, xmm1
-    movss xmm4, [view_bottom]
-    mulss xmm3, xmm4
-    addss xmm2, xmm3
-    movss xmm1, xmm2
+    movsd xmm2, [double_one]
+    subsd xmm2, xmm1
+    movsd xmm3, [view_top]
+    mulsd xmm2, xmm3
+    movsd xmm3, xmm1
+    movsd xmm4, [view_bottom]
+    mulsd xmm3, xmm4
+    addsd xmm2, xmm3
+    movsd xmm1, xmm2
 
     ; now xmm1 contains y0
 
     mov r11d, 0              ; iteration variable
-    movss xmm2, [float_zero] ; x variable
-    movss xmm3, xmm2         ; y variable
+    movsd xmm2, [double_zero] ; x variable
+    movsd xmm3, xmm2         ; y variable
 
     ; to sum up:
     ; xmm0 - x0
@@ -170,38 +170,38 @@ render_px:
     ; r11d - iteration
 
     ; now execute this loop - for more see C reference program
-    ; while(x * x + y * y < 4.f && iteration < config.iterations)
+    ; while(x * x + y * y < 4.0 && iteration < config.iterations)
 
 loop_iter:
 
-    movss xmm4, xmm2
-    mulss xmm4, xmm2
-    movss xmm5, xmm3
-    mulss xmm5, xmm3
+    movsd xmm4, xmm2
+    mulsd xmm4, xmm2
+    movsd xmm5, xmm3
+    mulsd xmm5, xmm3
     ; values in xmm4 and xmm5 will be used soon so we don't overwrite them here
-    movss xmm6, xmm4
-    addss xmm6, xmm5
+    movsd xmm6, xmm4
+    addsd xmm6, xmm5
     ; xmm6 = x * x + y * y
     
-    ucomiss xmm6, [float_four]
+    ucomisd xmm6, [double_four]
     jae end_loop_iter
 
     cmp r11d, dword [iterations]
     je end_loop_iter
 
     ; C reference code
-    ; float x_temp = x * x - y * y + x0;
-    ; y = 2.f * x * y + y0;
+    ; double x_temp = x * x - y * y + x0;
+    ; y = 2.0 * x * y + y0;
     ; x = x_temp;
 
-    movss xmm6, xmm4
-    subss xmm6, xmm5
-    addss xmm6, xmm0
+    movsd xmm6, xmm4
+    subsd xmm6, xmm5
+    addsd xmm6, xmm0
     ; xmm4 and xmm5 can be reused at this point, xmm6 is temp variable
-    mulss xmm3, [float_two]
-    mulss xmm3, xmm2
-    addss xmm3, xmm1
-    movss xmm2, xmm6
+    mulsd xmm3, [double_two]
+    mulsd xmm3, xmm2
+    addsd xmm3, xmm1
+    movsd xmm2, xmm6
 
     inc r11d ; ++iteration
     jmp loop_iter
@@ -210,10 +210,10 @@ end_loop_iter:
 
     ; calculate color - iteration / iterations
 
-    cvtsi2ss xmm0, r11d
-    cvtsi2ss xmm1, [iterations]
-    divss xmm0, xmm1
-    mulss xmm0, [float_max_u8]
+    cvtsi2sd xmm0, r11d
+    cvtsi2sd xmm1, [iterations]
+    divsd xmm0, xmm1
+    mulsd xmm0, [double_max_u8]
 
     ; oh man, what a bug - cvtss2si is performing rounding so we don't have to
     ; add 0.5 to the color value - if we do this when color == 255 we overflow and
@@ -225,8 +225,10 @@ end_loop_iter:
     ; with registers in this program)
 
     ;addss xmm0, [float_half]
+    
+    ; edit (10 February 2019): changed cvtss2si to cvtsd2si
 
-    cvtss2si esi, xmm0
+    cvtsd2si esi, xmm0
 
     ; calculate the address of the pixel
     ; offset
