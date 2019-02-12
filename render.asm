@@ -140,7 +140,6 @@ create_threads:
     mul rbx
     mov rdi, pthread_array
     add rdi, rax         ; pthread_t* thread
-
     mov rsi, 0           ; pthread_attr_t* attr
     mov rdx, thread_work ; void* start_routine
     mov rcx, 0           ; void* arg
@@ -159,7 +158,7 @@ join_threads:
     call pthread_join
     inc rbx
     cmp rbx, r12
-    ;jl join_threads
+    jl join_threads
 
     ; open file
     mov rax, 2
@@ -225,6 +224,8 @@ render_px:
 
     ; this must be an atomic operation
     ; I checked how gcc __sync_fetch_and_add() looks under compiler explorer
+    ; I checked how program behaves without this atomicity and there are corruptions,
+    ; small black dots across the image
     mov eax, 1
     lock xadd dword[current_px_idx], eax
     mov r10d, eax
