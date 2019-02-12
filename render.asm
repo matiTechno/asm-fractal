@@ -116,21 +116,28 @@ arg_done:
 
     ; without pushing 8 bytes on the stack program crashes on call pthread_create
     ; maybe it has something to do with a stack alignment
-    ; I have to investigate this
+    ; I have to investigate this; it crashes on movaps instruction
+    ; (inside pthread_create) which requires some alignment
 
-    ; edit:
+    ; edit1:
     ; with 'sub rsp, 8' uncommented and 'jl create_threads', 'jl join_threads'
     ; commented program does not crash, why the hell?
 
+    ; edit2:
+    ; r9 register is overwritten by pthred_create... my mistake to not properly debug it
+    ; rbx must be preserved across the call so I will use it instead of r9
+    ; alternatively I could push it on the stack and pop after function call
+    ; r10 is also not preserved - changing to r12
+
     sub rsp, 8
 
-    mov r9, 0 ; thread_array idx
-    mov r10d, dword [num_threads]
+    mov rbx, 0 ; thread_array idx
+    mov r12d, dword [num_threads]
 
 create_threads:
 
     mov rax, 8 ; size of a qword
-    mul r9
+    mul rbx
     mov rdi, pthread_array
     add rdi, rax         ; pthread_t* thread
 
@@ -139,19 +146,19 @@ create_threads:
     mov rcx, 0           ; void* arg
     call pthread_create
 
-    inc r9
-    cmp r9, r10
-    ;jl create_threads
+    inc rbx
+    cmp rbx, r12
+    jl create_threads
 
-    mov r9, 0
+    mov rbx, 0
 
 join_threads:
 
-    mov rdi, qword [pthread_array + r9 * 8] ; pthread_t thread
-    mov rsi, 0                              ; void** retval
+    mov rdi, qword [pthread_array + rbx * 8] ; pthread_t thread
+    mov rsi, 0                               ; void** retval
     call pthread_join
-    inc r9
-    cmp r9, r10
+    inc rbx
+    cmp rbx, r12
     ;jl join_threads
 
     ; open file
