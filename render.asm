@@ -2,21 +2,26 @@
 ; * higher bits of e.g rax are cleared when a value is moved in to the eax
 ; * sizes of the string constants are hardcoded - so be careful when changing
 ;   strings, I should fix this in the future, do something more robust
+; * there is no error checking - both for syscalls and command line arguments
 
 section .bss
 
 ; maybe I could store these on stack but I find it more convenient this way
 
-buffer        resq 1
-fd            resd 1
-image_width   resd 1
-image_height  resd 1
-string_buffer resb 1024 ; don't change the size - one function relies on it
+current_px_idx resd 1
+num_threads    resd 1
+argc           resd 1
+buffer         resq 1
+fd             resd 1
+image_width    resd 1
+image_height   resd 1
+string_buffer  resb 1024 ; don't change the size - one function relies on it
+pthread_array  resq 128  ; pthread_t is defined as unsigned long which is 8 bytes on x64
 
 section .data
 
 msg_default db "rendering at a default resolution 1920x1080px", 0xa
-msg_error   db "0 or 2 arguments required", 0xa
+msg_error   db "1 or 3 arguments required - num_threads, width, height", 0xa
 msg_P6      db "P6 "
 filename    db "fractal.ppm", 0
 
@@ -34,28 +39,40 @@ double_half   dq 0.5
 double_four   dq 4.0
 double_two    dq 2.0
 
+extern pthread_create
+extern pthread_join
+
 global _start
 
 section .text
 _start:
 
-    ; retrive width and height from command line arguments
+    ; retrive number of threads, width and height from command line arguments
+    pop rax
+    mov dword [argc], eax
+    pop rdi ; skip argc[0] (program name)
 
-    pop rax ; argc
-    cmp rax, 1
-    je default_res
-    cmp rax, 3
-    je custom_res
+    cmp rax, 2
+    je get_thread_arg
+    cmp rax, 4
+    je get_thread_arg
 
     ; error
     mov rax, 1
     mov rdi, 1
     mov rsi, msg_error
-    mov rdx, 26
+    mov rdx, 55
     syscall
     jmp exit
 
-default_res:
+get_thread_arg:
+
+    pop rax
+    call str_to_int
+    mov dword [num_threads], eax
+
+    cmp dword [argc], 4
+    je custom_resolution
 
     mov dword [image_width], 1920
     mov dword [image_height], 1080
@@ -64,21 +81,18 @@ default_res:
     mov rsi, msg_default
     mov rdx, 46
     syscall
-    jmp allocation
+    jmp arg_done ; skip custom_resolution step
 
-custom_res:
+custom_resolution:
 
-    ; todo: error checking
-    pop rax ; skip argc[0] (program name)
     pop rax ; width
     call str_to_int
     mov dword [image_width], eax
     pop rax ; height
     call str_to_int
     mov dword [image_height], eax
-    jmp allocation
 
-allocation:
+arg_done:
 
     ; allocate the image buffer with sys_mmap
 
@@ -100,9 +114,116 @@ allocation:
     syscall
     mov qword [buffer], rax ; store the address returned by sys_mmap
 
-    mov r10d, 0 ; pixel index
+    ; without pushing 8 bytes on the stack program crashes on call pthread_create
+    ; maybe it has something to do with a stack alignment
+    ; I have to investigate this
+
+    ; edit:
+    ; with 'sub rsp, 8' uncommented and 'jl create_threads', 'jl join_threads'
+    ; commented program does not crash, why the hell?
+
+    sub rsp, 8
+
+    mov r9, 0 ; thread_array idx
+    mov r10d, dword [num_threads]
+
+create_threads:
+
+    mov rax, 8 ; size of a qword
+    mul r9
+    mov rdi, pthread_array
+    add rdi, rax         ; pthread_t* thread
+
+    mov rsi, 0           ; pthread_attr_t* attr
+    mov rdx, thread_work ; void* start_routine
+    mov rcx, 0           ; void* arg
+    call pthread_create
+
+    inc r9
+    cmp r9, r10
+    ;jl create_threads
+
+    mov r9, 0
+
+join_threads:
+
+    mov rdi, qword [pthread_array + r9 * 8] ; pthread_t thread
+    mov rsi, 0                              ; void** retval
+    call pthread_join
+    inc r9
+    cmp r9, r10
+    ;jl join_threads
+
+    ; open file
+    mov rax, 2
+    mov rdi, filename
+    mov rsi, 1101o ; truncate, create, write only
+    mov rdx, 644o  ; mode (permissions)
+    syscall
+
+    mov [fd], eax ; save the file descriptor
+
+    ; write to file - header
+    mov rax, 1
+    mov edi, dword [fd]
+    mov rsi, msg_P6
+    mov rdx, 3
+    syscall
+
+    mov eax, dword [image_width]
+    call write_int_space
+    mov eax, dword [image_height]
+    call write_int_space
+    mov eax, 255
+    call write_int_space
+
+    ; write to file - buffer
+    ; calculate byte size
+    mov eax, dword [image_width]
+    mov edi, dword [image_height]
+    mul edi
+    mov edi, 3
+    mul edi
+    mov edx, eax
+
+    mov rax, 1
+    mov edi, dword [fd]
+    mov rsi, [buffer]
+    ; rdx is already set
+    syscall
+
+    ; close file
+    mov rax, 3
+    mov edi, dword [fd]
+    syscall
+    
+exit:
+    mov rax, 60
+    mov rdi, 0
+    syscall
+
+thread_work:
+
+    mov eax, dword [image_width]
+    mov edi, dword [image_height]
+    mul edi
+    mov r9, rax
+    dec r9 ; index of the last element of image buffer
 
 render_px:
+    ; I don't use local buffer technique here because as I tested on c-reference exe
+    ; setting buffer size to 1 does not decrease the performance and is equivalent to
+    ; this implementation (but I don't know why it is so, what about false sharing;
+    ; I plan to investigate it)
+
+    ; this must be an atomic operation
+    ; I checked how gcc __sync_fetch_and_add() looks under compiler explorer
+    mov eax, 1
+    lock xadd dword[current_px_idx], eax
+    mov r10d, eax
+
+    cmp r10, r9
+    jge thread_work_return 
 
     ; setting the dividend is quite tricky
     mov edx, 0
@@ -244,61 +365,10 @@ end_loop_iter:
     mov byte [rdi + 1], sil
     mov byte [rdi + 2], sil
 
-    inc r10d
-    ; check if we iterated over all the pixels
-    mov eax, dword [image_width]
-    mov edi, dword [image_height]
-    mul edi
-    cmp r10d, eax
-    jne render_px ; if not go back
+    jmp render_px
 
-    ; open file
-    mov rax, 2
-    mov rdi, filename
-    mov rsi, 1101o ; truncate, create, write only
-    mov rdx, 644o  ; mode (permissions)
-    syscall
-
-    mov [fd], eax ; save the file descriptor
-
-    ; write to file - header
-    mov rax, 1
-    mov edi, dword [fd]
-    mov rsi, msg_P6
-    mov rdx, 3
-    syscall
-
-    mov eax, dword [image_width]
-    call write_int_space
-    mov eax, dword [image_height]
-    call write_int_space
-    mov eax, 255
-    call write_int_space
-
-    ; write to file - buffer
-    ; calculate byte size
-    mov eax, dword [image_width]
-    mov edi, dword [image_height]
-    mul edi
-    mov edi, 3
-    mul edi
-    mov edx, eax
-
-    mov rax, 1
-    mov edi, dword [fd]
-    mov rsi, [buffer]
-    ; rdx is already set
-    syscall
-
-    ; close file
-    mov rax, 3
-    mov edi, dword [fd]
-    syscall
-    
-exit:
-    mov rax, 60
-    mov rdi, 0
-    syscall
+thread_work_return:
+    ret
 
 ; rax should be set to address of the target string
 str_to_int:
