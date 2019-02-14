@@ -31,10 +31,7 @@ struct
 static int _progress = 0;
 static Color* _image_buf;
 
-// This does not have any impact on performance. I would like to know why.
-// What about false sharing?
-
-#define PX_CHUNK_SIZE 36
+#define PX_CHUNK_SIZE 24
 
 static void* thread_work(void*)
 {
