@@ -5,7 +5,9 @@
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
-#include <pthread.h>
+#include <sched.h>
+#include <sys/syscall.h>
+#include <linux/futex.h>
 
 struct Color
 {
@@ -31,9 +33,10 @@ struct
 static int _progress = 0;
 static Color* _image_buf;
 
+#define STACK_SIZE 1024
 #define PX_CHUNK_SIZE 24
 
-static void* thread_work(void*)
+int thread_work(void*)
 {
     int pixel_count = _config.render_width * _config.render_height;
     Color local_buf[PX_CHUNK_SIZE];
@@ -85,7 +88,9 @@ static void* thread_work(void*)
         memcpy(_image_buf + start, local_buf, sizeof(Color) * pixels_to_render);
     }
 
-    return nullptr;
+    int ret = syscall(202, &_progress, FUTEX_PRIVATE_FLAG | FUTEX_WAKE, 1);
+    assert(ret != -1);
+    return 0;
 }
 
 int main(int argc, const char** argv)
@@ -104,22 +109,42 @@ int main(int argc, const char** argv)
     int result = sscanf(argv[1], "%d", &num_threads);
     assert(result);
 
-    pthread_t threads[num_threads];
+    char* stacks[num_threads];
 
-    for(pthread_t& thread: threads)
+    for(int i = 0; i < num_threads; ++i)
     {
-        int r = pthread_create(&thread, nullptr, thread_work, nullptr);
-        assert(!r);
+        stacks[i] = (char*)malloc(STACK_SIZE); // hope it is enough
+        assert(stacks[i]);
     }
 
-    for(pthread_t& thread: threads)
+    for(int i = 0; i < num_threads; ++i)
     {
-        int r = pthread_join(thread, nullptr);
-        assert(!r);
+        // shouldn't stack top be one less than that?
+        // all examples use this method but then stack points one byte outside
+        // of allocated space
+
+        int ret = clone(thread_work, stacks[i] + STACK_SIZE,
+                CLONE_THREAD | CLONE_SIGHAND | CLONE_VM, nullptr);
+
+        assert(ret != -1);
+    }
+
+    int pixels_to_render = _config.render_width * _config.render_height;
+
+    while(true)
+    {
+        if(_progress >= pixels_to_render)
+            break;
+
+        int ret = syscall(202, &_progress, FUTEX_PRIVATE_FLAG | FUTEX_WAIT, _progress,
+                nullptr);
+
+        assert(ret != -1);
     }
 
     int fd = open("fractal.ppm", O_WRONLY | O_TRUNC | O_CREAT,
                   S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+
     assert(fd != -1);
 
     char buf[1024];
