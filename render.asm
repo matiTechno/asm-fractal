@@ -8,6 +8,7 @@ section .bss
 
 ; maybe I could store these on stack but I find it more convenient this way
 
+pixel_count    resd 1
 current_px_idx resd 1
 num_threads    resd 1
 argc           resd 1
@@ -16,7 +17,7 @@ fd             resd 1
 image_width    resd 1
 image_height   resd 1
 string_buffer  resb 1024 ; don't change the size - one function relies on it
-pthread_array  resq 128  ; pthread_t is defined as unsigned long which is 8 bytes on x64
+stack_array    resq 128
 
 section .data
 
@@ -38,9 +39,6 @@ double_max_u8 dq 255.0
 double_half   dq 0.5
 double_four   dq 4.0
 double_two    dq 2.0
-
-extern pthread_create
-extern pthread_join
 
 global _start
 
@@ -100,6 +98,7 @@ arg_done:
     mov eax, dword [image_width]
     mov edi, dword [image_height]
     mul edi
+    mov dword [pixel_count], eax ; store this value - we will use it later
     mov edi, 3
     mul edi
     mov esi, eax ; store the results in rsi
@@ -114,51 +113,52 @@ arg_done:
     syscall
     mov qword [buffer], rax ; store the address returned by sys_mmap
 
-    ; without pushing 8 bytes on the stack program crashes on call pthread_create
-    ; maybe it has something to do with a stack alignment
-    ; I have to investigate this; it crashes on movaps instruction
-    ; (inside pthread_create) which requires some alignment
-
-    ; edit1:
-    ; with 'sub rsp, 8' uncommented and 'jl create_threads', 'jl join_threads'
-    ; commented program does not crash, why the hell?
-
-    ; edit2:
-    ; r9 register is overwritten by pthred_create... my mistake to not properly debug it
-    ; rbx must be preserved across the call so I will use it instead of r9
-    ; alternatively I could push it on the stack and pop after function call
-    ; r10 is also not preserved - changing to r12
-
-    sub rsp, 8
-
-    mov rbx, 0 ; thread_array idx
     mov r12d, dword [num_threads]
+    mov rbx, 0 ; stack_array idx
+
+allocate_stacks:
+
+    ; mmap
+    mov rax, 9
+    mov rdi, 0
+    mov rsi, 1024
+    mov rdx, 0x3
+    mov r10, 0x22
+    mov r8, -1
+    mov r9, 0
+    syscall
+    mov qword [stack_array + rbx * 8], rax
+
+    inc rbx
+    cmp rbx, r12
+    jl allocate_stacks
+
+    mov rbx, 0
 
 create_threads:
 
-    mov rax, 8 ; size of a qword
-    mul rbx
-    mov rdi, pthread_array
-    add rdi, rax         ; pthread_t* thread
-    mov rsi, 0           ; pthread_attr_t* attr
-    mov rdx, thread_work ; void* start_routine
-    mov rcx, 0           ; void* arg
-    call pthread_create
-
+    ; todo
     inc rbx
     cmp rbx, r12
     jl create_threads
 
-    mov rbx, 0
-
 join_threads:
 
-    mov rdi, qword [pthread_array + rbx * 8] ; pthread_t thread
-    mov rsi, 0                               ; void** retval
-    call pthread_join
-    inc rbx
-    cmp rbx, r12
-    jl join_threads
+    mov edx, dword [current_px_idx]
+    cmp dword [pixel_count], edx
+    jge join_done
+
+    ; futex
+    mov rax, 202
+    mov rdi, current_px_idx
+    mov rsi, 128 ; FUTEX_PRIVATE_FLAG | FUTEX_WAIT
+    ; edx is already set, val to compare - see man futex
+    mov rcx, 0 ; timeout ptr
+    syscall
+
+    jmp join_threads
+
+join_done:
 
     ; open file
     mov rax, 2
@@ -210,10 +210,7 @@ exit:
 
 thread_work:
 
-    mov eax, dword [image_width]
-    mov edi, dword [image_height]
-    mul edi
-    mov r9, rax
+    mov r9d, dword [pixel_count]
     dec r9 ; index of the last element of image buffer
 
 render_px:
@@ -221,6 +218,7 @@ render_px:
     ; setting buffer size to 1 does not decrease the performance and is equivalent to
     ; this implementation (but I don't know why it is so, what about false sharing;
     ; I plan to investigate it)
+    ; edit: it gives some performance but not quite as much as I would expect
 
     ; this must be an atomic operation
     ; I checked how gcc __sync_fetch_and_add() looks under compiler explorer
@@ -373,7 +371,14 @@ end_loop_iter:
     mov byte [rdi + 1], sil
     mov byte [rdi + 2], sil
 
-    jmp render_px
+    cmp r9, r10
+    jl render_px
+    ; futext, only the thread that rendered the last pixel will wake the main thread
+    mov rax, 202
+    mov rdi, current_px_idx
+    mov rsi, 129 ; FUTEX_PRIVATE_FLAG | FUTEX_WAKE
+    mov rdx, 1 ; number of waiters to wake
+    syscall
 
 thread_work_return:
     ret
