@@ -40,6 +40,7 @@ int thread_work(void*)
 {
     int pixel_count = _config.render_width * _config.render_height;
     Color local_buf[PX_CHUNK_SIZE];
+    bool wake_main_thread = false;
 
     while(true)
     {
@@ -49,9 +50,13 @@ int thread_work(void*)
             break;
 
         int max_pixels_to_render = pixel_count - start;
+        int pixels_to_render = PX_CHUNK_SIZE;
 
-        int pixels_to_render = (PX_CHUNK_SIZE < max_pixels_to_render) ? PX_CHUNK_SIZE :
-                               max_pixels_to_render;
+        if(PX_CHUNK_SIZE >= max_pixels_to_render)
+        {
+            wake_main_thread = true;
+            pixels_to_render = max_pixels_to_render;
+        }
 
         for(int i = 0 ; i < pixels_to_render; ++i)
         {
@@ -88,8 +93,12 @@ int thread_work(void*)
         memcpy(_image_buf + start, local_buf, sizeof(Color) * pixels_to_render);
     }
 
-    int ret = syscall(202, &_progress, FUTEX_PRIVATE_FLAG | FUTEX_WAKE, 1);
-    assert(ret != -1);
+    if(wake_main_thread)
+    {
+        int ret = syscall(202, &_progress, FUTEX_PRIVATE_FLAG | FUTEX_WAKE, 1);
+        assert(ret != -1);
+    }
+
     return 0;
 }
 
