@@ -3,6 +3,7 @@
 ; * sizes of the string constants are hardcoded - so be careful when changing
 ;   strings, I should fix this in the future, do something more robust
 ; * there is no error checking - both for syscalls and command line arguments
+; * worker threads have no stack assigned to them - don't use push
 
 section .bss
 
@@ -17,7 +18,6 @@ fd             resd 1
 image_width    resd 1
 image_height   resd 1
 string_buffer  resb 1024 ; don't change the size - one function relies on it
-stack_array    resq 128
 
 section .data
 
@@ -133,8 +133,8 @@ join_threads:
     mov rax, 202
     mov rdi, current_px_idx
     mov rsi, 128 ; FUTEX_PRIVATE_FLAG | FUTEX_WAIT
-    ; edx is already set, val to compare - see man futex
-    mov rcx, 0 ; timeout ptr
+    ; edx is already set, value to compare - see man futex
+    mov rcx, 0 ; timespec* timeout
     syscall
 
     jmp join_threads
@@ -249,8 +249,6 @@ render_px:
     movsd xmm0, xmm2 ; we don't need x scaling factor anymore
 
     ; now xmm0 contains x0
-
-    ; note: maybe I should consider just pushing things onto the stack
     ; do the same for y0
 
     ; y0
@@ -266,9 +264,9 @@ render_px:
 
     ; now xmm1 contains y0
 
-    mov r11d, 0              ; iteration variable
+    mov r11d, 0               ; iteration variable
     movsd xmm2, [double_zero] ; x variable
-    movsd xmm3, xmm2         ; y variable
+    movsd xmm3, xmm2          ; y variable
 
     ; to sum up:
     ; xmm0 - x0
