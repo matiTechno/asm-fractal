@@ -116,25 +116,6 @@ arg_done:
     mov r12d, dword [num_threads]
     mov rbx, 0 ; stack_array idx
 
-allocate_stacks:
-
-    ; mmap
-    mov rax, 9
-    mov rdi, 0
-    mov rsi, 1024
-    mov rdx, 0x3
-    mov r10, 0x22
-    mov r8, -1
-    mov r9, 0
-    syscall
-    mov qword [stack_array + rbx * 8], rax
-
-    inc rbx
-    cmp rbx, r12
-    jl allocate_stacks
-
-    mov rbx, 0
-
 create_threads:
 
     ; todo
