@@ -145,6 +145,9 @@ int main(int argc, const char** argv)
 
     for(int i = 0; i < num_threads; ++i)
     {
+        // see c-raw-clone git branch for explanation why calling clone with
+        // syscall() does not work and crashes program
+
         int ret = clone(thread_work, stacks[i] + STACK_SIZE,
                 CLONE_THREAD | CLONE_SIGHAND | CLONE_VM, nullptr);
 
