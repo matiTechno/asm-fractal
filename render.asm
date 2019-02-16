@@ -3,7 +3,8 @@
 ;       to other registers)
 ; * sizes of the string constants are hardcoded
 ; * there is no error checking, both for syscalls and command line arguments
-; * child threads don't use stacks - pop / push can't be used in a thread function
+; * child threads don't use stacks - pop / push / call/ ret can't be used in a thread
+;       function
 
 section .bss
 
@@ -29,7 +30,7 @@ msg_error   db "1 or 3 arguments required - num_threads, width, height", 0xa
 msg_P6      db "P6 "
 filename    db "fractal.ppm", 0
 
-iterations     dd 800
+iterations dd 800
 
 view_left   dq -0.711580
 view_right  dq -0.711562
@@ -54,9 +55,9 @@ _start:
     pop rdi ; skip argc[0] (program name)
 
     cmp rax, 2
-    je get_thread_arg
+    je .get_thread_arg
     cmp rax, 4
-    je get_thread_arg
+    je .get_thread_arg
 
     ; error
     mov rax, 1
@@ -66,14 +67,14 @@ _start:
     syscall
     jmp exit
 
-get_thread_arg:
+.get_thread_arg:
 
     pop rax
     call str_to_int
     mov dword [num_threads], eax
 
     cmp dword [argc], 4
-    je custom_resolution
+    je .custom_resolution
 
     mov dword [image_width], 1920
     mov dword [image_height], 1080
@@ -82,9 +83,9 @@ get_thread_arg:
     mov rsi, msg_default
     mov rdx, 46
     syscall
-    jmp arg_done ; skip custom_resolution step
+    jmp .arg_done ; skip .custom_resolution step
 
-custom_resolution:
+.custom_resolution:
 
     pop rax ; width
     call str_to_int
@@ -93,7 +94,7 @@ custom_resolution:
     call str_to_int
     mov dword [image_height], eax
 
-arg_done:
+.arg_done:
 
     ; allocate the image buffer with mmap
 
@@ -119,7 +120,7 @@ arg_done:
     mov r12d, dword [num_threads]
     mov rbx, 0 ; iterator
 
-create_threads:
+.create_threads:
 
     mov rax, 56 ; clone
     mov rdi, 10900h ; CLONE_THREAD | CLONE_VM | CLONE_SIGHAND
@@ -133,7 +134,7 @@ create_threads:
 
     inc rbx
     cmp rbx, r12
-    jl create_threads
+    jl .create_threads
 
     ; wait for child threads to end, implemented with futex syscall
     mov rax, 202
@@ -201,7 +202,7 @@ thread_work:
     mov r9d, dword [pixel_count]
     dec r9 ; index of the last element of image buffer
 
-render_px:
+.render_px:
     ; I don't use local buffer technique here because as I tested on c-reference exe
     ; setting buffer size to 1 does not decrease the performance and is equivalent to
     ; this implementation (but I don't know why it is so, what about false sharing;
@@ -285,7 +286,7 @@ render_px:
     ; now execute this loop - for more see C reference program
     ; while(x * x + y * y < 4.0 && iteration < config.iterations)
 
-loop_iter:
+.loop_iter:
 
     movsd xmm4, xmm2
     mulsd xmm4, xmm2
@@ -297,10 +298,10 @@ loop_iter:
     ; xmm6 = x * x + y * y
     
     ucomisd xmm6, [double_four]
-    jae end_loop_iter
+    jae .end_loop_iter
 
     cmp r11d, dword [iterations]
-    je end_loop_iter
+    je .end_loop_iter
 
     ; C reference code
     ; double x_temp = x * x - y * y + x0;
@@ -317,9 +318,9 @@ loop_iter:
     movsd xmm2, xmm6
 
     inc r11d ; ++iteration
-    jmp loop_iter
+    jmp .loop_iter
 
-end_loop_iter:
+.end_loop_iter:
 
     ; calculate color - iteration / iterations
 
@@ -359,7 +360,7 @@ end_loop_iter:
     mov byte [rdi + 2], sil
 
     cmp r10, r9
-    jne render_px
+    jne .render_px
 
     ; futex, only the thread that rendered the last pixel will wake the main thread
     inc dword [futex]
@@ -379,19 +380,19 @@ str_to_int:
     mov rax, 0  ; we store the result here
     mov rbx, 0  ; see how we use bl - lowest byte of rbx - we zero out higher bytes
 
-str_to_int_loop:
+.loop:
 
     cmp [rdi], byte 0
-    je str_to_int_return
+    je .return
     mov bl, byte [rdi]
     sub bl, 48
     mul rsi
     add rax, rbx
     inc rdi
-    jmp str_to_int_loop
+    jmp .loop
 
 
-str_to_int_return:
+.return:
     ret
 
 ; arguments:
@@ -413,7 +414,7 @@ write_int_space:
     mov byte [r15], 32 ; end the string with a space
     inc r9
 
-write_int_space_loop:
+.loop:
 
     ; higher 8 bytes of the dividend are stored in rdx - we set it to 0
     ; (our dividend fits into rax and does not need to be extended to rdx)
@@ -428,7 +429,7 @@ write_int_space_loop:
     mov byte [r15], dl ; write a character to a temporary buffer
     inc r9
     cmp rax, 0
-    jne write_int_space_loop
+    jne .loop
 
     mov rax, 1 ; sys_write
     ; rdi is set by the caller
