@@ -5,7 +5,6 @@
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
-#include <sched.h>
 #include <sys/syscall.h>
 #include <linux/futex.h>
 #include <errno.h>
@@ -38,7 +37,7 @@ static Color* _image_buf;
 #define STACK_SIZE 1024
 #define PX_CHUNK_SIZE 24
 
-int thread_work(void*)
+void thread_work()
 {
     int pixel_count = _config.render_width * _config.render_height;
     Color local_buf[PX_CHUNK_SIZE];
@@ -101,8 +100,6 @@ int thread_work(void*)
         int ret = syscall(202, &_futex, FUTEX_PRIVATE_FLAG | FUTEX_WAKE, 1);
         assert(ret != -1);
     }
-
-    return 0;
 }
 
 int main(int argc, const char** argv)
@@ -145,8 +142,28 @@ int main(int argc, const char** argv)
 
     for(int i = 0; i < num_threads; ++i)
     {
-        int ret = clone(thread_work, stacks[i] + STACK_SIZE,
-                CLONE_THREAD | CLONE_SIGHAND | CLONE_VM, nullptr);
+        // clone
+        // I think it might be crashing because syscall() is a function and when
+        // it returns on a newly created stack it has nowhere to return,
+        // there is no return address on the stack
+        // I want to see if inlined assembly will help
+
+        int ret;
+        char* stack_ptr = stacks[i] + STACK_SIZE;
+
+        __asm__("movq $56      , %%rax\n"
+                "movq $0x10900 , %%rdi\n"
+                "movq %1       , %%rsi\n"
+                "syscall\n"
+                : "=g"(ret)
+                :  "g"(stack_ptr));
+
+        if(ret == 0) // child thread path
+        {
+            thread_work();
+            // can't call exit() because it will terminate all the threads
+            syscall(60, 0);
+        }
 
         assert(ret != -1);
     }
