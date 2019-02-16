@@ -5,10 +5,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
-#include <sched.h>
-#include <sys/syscall.h>
-#include <linux/futex.h>
-#include <errno.h>
+#include <pthread.h>
 
 struct Color
 {
@@ -32,17 +29,14 @@ struct
 } static _config;
 
 static int _progress = 0;
-static int _futex = 0;
 static Color* _image_buf;
 
-#define STACK_SIZE 1024
 #define PX_CHUNK_SIZE 24
 
-int thread_work(void*)
+void* thread_work(void*)
 {
     int pixel_count = _config.render_width * _config.render_height;
     Color local_buf[PX_CHUNK_SIZE];
-    bool wake_main_thread = false;
 
     while(true)
     {
@@ -52,13 +46,9 @@ int thread_work(void*)
             break;
 
         int max_pixels_to_render = pixel_count - start;
-        int pixels_to_render = PX_CHUNK_SIZE;
 
-        if(PX_CHUNK_SIZE >= max_pixels_to_render)
-        {
-            wake_main_thread = true;
-            pixels_to_render = max_pixels_to_render;
-        }
+        int pixels_to_render = PX_CHUNK_SIZE > max_pixels_to_render ? max_pixels_to_render
+                               : PX_CHUNK_SIZE;
 
         for(int i = 0 ; i < pixels_to_render; ++i)
         {
@@ -92,19 +82,10 @@ int thread_work(void*)
             local_buf[i] = color;
         }
 
-        // sometimes crash occurs here
-        // I think it might due to alignment of a stack I allocate
         memcpy(_image_buf + start, local_buf, sizeof(Color) * pixels_to_render);
     }
 
-    if(wake_main_thread)
-    {
-        ++_futex;
-        int ret = syscall(202, &_futex, FUTEX_PRIVATE_FLAG | FUTEX_WAKE, 1);
-        assert(ret != -1);
-    }
-
-    return 0;
+    return nullptr;
 }
 
 int main(int argc, const char** argv)
@@ -137,28 +118,19 @@ int main(int argc, const char** argv)
     _image_buf = (Color*)malloc(sizeof(Color) * pixel_count);
     assert(_image_buf);
 
-    char* stacks[num_threads];
+    pthread_t threads[num_threads];
 
     for(int i = 0; i < num_threads; ++i)
     {
-        stacks[i] = (char*)malloc(STACK_SIZE); // hope it is enough
-        assert(stacks[i]);
+        int ret = pthread_create(&threads[i], nullptr, thread_work, nullptr);
+        assert(!ret);
     }
 
     for(int i = 0; i < num_threads; ++i)
     {
-        // see c-raw-clone git branch for explanation why calling clone with
-        // syscall() does not work and crashes program
-
-        int ret = clone(thread_work, stacks[i] + STACK_SIZE,
-                CLONE_THREAD | CLONE_SIGHAND | CLONE_VM, nullptr);
-
-        assert(ret != -1);
+        int ret = pthread_join(threads[i], nullptr);
+        assert(!ret);
     }
-
-    int ret = syscall(202, &_futex, FUTEX_PRIVATE_FLAG | FUTEX_WAIT, 0, nullptr);
-
-    assert(ret != -1 || errno != EAGAIN);
 
     int fd = open("fractal.ppm", O_WRONLY | O_TRUNC | O_CREAT,
                   S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
