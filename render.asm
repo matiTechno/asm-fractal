@@ -1,23 +1,26 @@
 ; important notes:
-; * higher bits of e.g rax are cleared when a value is moved in to the eax
-; * sizes of the string constants are hardcoded - so be careful when changing
-;   strings, I should fix this in the future, do something more robust
-; * there is no error checking - both for syscalls and command line arguments
-; * worker threads have no stack assigned to them - don't use push
+; * higher bits of rax are cleared when a value is moved in to the eax (this also applies
+;       to other registers)
+; * sizes of the string constants are hardcoded
+; * there is no error checking, both for syscalls and command line arguments
+; * child threads don't use stacks - pop / push can't be used in a thread function
 
 section .bss
 
 ; maybe I could store these on stack but I find it more convenient this way
 
-pixel_count    resd 1
+; bss is initialized to 0
+
+futex          resd 1
 current_px_idx resd 1
+pixel_count    resd 1
 num_threads    resd 1
 argc           resd 1
-buffer         resq 1
 fd             resd 1
 image_width    resd 1
 image_height   resd 1
 string_buffer  resb 1024 ; don't change the size - one function relies on it
+buffer         resq 1
 
 section .data
 
@@ -26,7 +29,7 @@ msg_error   db "1 or 3 arguments required - num_threads, width, height", 0xa
 msg_P6      db "P6 "
 filename    db "fractal.ppm", 0
 
-iterations  dd 800
+iterations     dd 800
 
 view_left   dq -0.711580
 view_right  dq -0.711562
@@ -92,7 +95,7 @@ custom_resolution:
 
 arg_done:
 
-    ; allocate the image buffer with sys_mmap
+    ; allocate the image buffer with mmap
 
     ; calculate required size
     mov eax, dword [image_width]
@@ -114,32 +117,33 @@ arg_done:
     mov qword [buffer], rax ; store the address returned by sys_mmap
 
     mov r12d, dword [num_threads]
-    mov rbx, 0 ; stack_array idx
+    mov rbx, 0 ; iterator
 
 create_threads:
 
-    ; todo
+    mov rax, 56 ; clone
+    mov rdi, 10900h ; CLONE_THREAD | CLONE_VM | CLONE_SIGHAND
+    mov rsi, 0 ; no stack - we don't do anything with stack in a thread function
+    syscall
+
+    ; child thread path; jump must be performed, not a call - there is no stack
+    ; to store the return address
+    cmp rax, 0
+    je thread_work
+
     inc rbx
     cmp rbx, r12
     jl create_threads
 
-join_threads:
-
-    mov edx, dword [current_px_idx]
-    cmp dword [pixel_count], edx
-    jge join_done
-
-    ; futex
+    ; wait for child threads to end, implemented with futex syscall
     mov rax, 202
-    mov rdi, current_px_idx
+    mov rdi, futex
     mov rsi, 128 ; FUTEX_PRIVATE_FLAG | FUTEX_WAIT
-    ; edx is already set, value to compare - see man futex
-    mov rcx, 0 ; timespec* timeout
+    ; if *futex and this value are different - syscall returns immediately
+    ; this is useful if the threads would terminate before this syscall is issued
+    mov rdx, 0   
+    mov r10, 0   ; timespec* timeout
     syscall
-
-    jmp join_threads
-
-join_done:
 
     ; open file
     mov rax, 2
@@ -189,6 +193,9 @@ exit:
     mov rdi, 0
     syscall
 
+; note: we can't return from this function - there is nowhere to return
+; syscall exit is called to terminate
+
 thread_work:
 
     mov r9d, dword [pixel_count]
@@ -207,14 +214,14 @@ render_px:
     ; small black dots across the image
     mov eax, 1
     lock xadd dword[current_px_idx], eax
-    mov r10d, eax
+    cmp rax, r9
+    jg exit
 
-    cmp r10, r9
-    jge thread_work_return 
+    mov r10, rax ; save the index
 
     ; setting the dividend is quite tricky
     mov edx, 0
-    mov eax, r10d
+    ; eax is already set
     mov edi, dword [image_width]
     div edi
 
@@ -339,6 +346,7 @@ end_loop_iter:
     ; calculate the address of the pixel
     ; offset
     ; note: if the result is to big to fit into the eax, higher bits are stored in edx
+    ; (it is not the case here)
     mov eax, r10d
     mov edi, 3
     mul edi
@@ -350,17 +358,18 @@ end_loop_iter:
     mov byte [rdi + 1], sil
     mov byte [rdi + 2], sil
 
-    cmp r9, r10
-    jl render_px
-    ; futext, only the thread that rendered the last pixel will wake the main thread
+    cmp r10, r9
+    jne render_px
+
+    ; futex, only the thread that rendered the last pixel will wake the main thread
+    inc dword [futex]
     mov rax, 202
-    mov rdi, current_px_idx
+    mov rdi, futex
     mov rsi, 129 ; FUTEX_PRIVATE_FLAG | FUTEX_WAKE
     mov rdx, 1 ; number of waiters to wake
     syscall
 
-thread_work_return:
-    ret
+    jmp exit
 
 ; rax should be set to address of the target string
 str_to_int:

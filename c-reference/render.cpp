@@ -8,6 +8,7 @@
 #include <sched.h>
 #include <sys/syscall.h>
 #include <linux/futex.h>
+#include <errno.h>
 
 struct Color
 {
@@ -31,6 +32,7 @@ struct
 } static const _config;
 
 static int _progress = 0;
+static int _futex = 0;
 static Color* _image_buf;
 
 #define STACK_SIZE 1024
@@ -95,7 +97,8 @@ int thread_work(void*)
 
     if(wake_main_thread)
     {
-        int ret = syscall(202, &_progress, FUTEX_PRIVATE_FLAG | FUTEX_WAKE, 1);
+        ++_futex;
+        int ret = syscall(202, &_futex, FUTEX_PRIVATE_FLAG | FUTEX_WAKE, 1);
         assert(ret != -1);
     }
 
@@ -128,28 +131,15 @@ int main(int argc, const char** argv)
 
     for(int i = 0; i < num_threads; ++i)
     {
-        // shouldn't stack top be one less than that?
-        // all examples use this method but then stack points one byte outside
-        // of allocated space
-
         int ret = clone(thread_work, stacks[i] + STACK_SIZE,
                 CLONE_THREAD | CLONE_SIGHAND | CLONE_VM, nullptr);
 
         assert(ret != -1);
     }
 
-    int pixels_to_render = _config.render_width * _config.render_height;
+    int ret = syscall(202, &_futex, FUTEX_PRIVATE_FLAG | FUTEX_WAIT, 0, nullptr);
 
-    while(true)
-    {
-        if(_progress >= pixels_to_render)
-            break;
-
-        int ret = syscall(202, &_progress, FUTEX_PRIVATE_FLAG | FUTEX_WAIT, _progress,
-                nullptr);
-
-        assert(ret != -1);
-    }
+    assert(ret != -1 || errno != EAGAIN);
 
     int fd = open("fractal.ppm", O_WRONLY | O_TRUNC | O_CREAT,
                   S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
