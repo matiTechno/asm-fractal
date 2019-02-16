@@ -92,6 +92,8 @@ int thread_work(void*)
             local_buf[i] = color;
         }
 
+        // sometimes crash occurs here
+        // I think it might due to alignment of a stack I allocate
         memcpy(_image_buf + start, local_buf, sizeof(Color) * pixels_to_render);
     }
 
