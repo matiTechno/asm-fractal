@@ -29,7 +29,7 @@ struct
 
     int iterations = 800;
 
-} static const _config;
+} static _config;
 
 static int _progress = 0;
 static int _futex = 0;
@@ -107,19 +107,33 @@ int thread_work(void*)
 
 int main(int argc, const char** argv)
 {
-    if(argc != 2)
+    if(argc != 2 && argc != 4)
     {
-        printf("one argument required - number of threads to run\n");
+        printf("one or three arguments required - num threads, width, height\n");
         return 0;
+    }
+
+    int num_threads;
+    int result = sscanf(argv[1], "%d", &num_threads);
+    assert(result);
+
+    if(argc ==4)
+    {
+        result = sscanf(argv[2], "%d", &_config.render_width);
+        assert(result);
+
+        result = sscanf(argv[3], "%d", &_config.render_height);
+        assert(result);
+    }
+    else
+    {
+        printf("rendering at the default resolution %dx%dpx\n", _config.render_width,
+                _config.render_height);
     }
 
     int pixel_count = _config.render_width * _config.render_height;
     _image_buf = (Color*)malloc(sizeof(Color) * pixel_count);
     assert(_image_buf);
-
-    int num_threads;
-    int result = sscanf(argv[1], "%d", &num_threads);
-    assert(result);
 
     char* stacks[num_threads];
 

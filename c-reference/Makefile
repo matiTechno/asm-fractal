@@ -4,5 +4,8 @@ all:
 rel:
 	g++ -std=c++14 -Wall -Wextra -Ofast -DNDEBUG -o render render.cpp
 
+clango3:
+	clang++ -std=c++14 -Wall -Wextra -O3 -DNDEBUG -o render render.cpp
+
 asm:
 	g++ -std=c++14 -Wall -Wextra -g -S -masm=intel -o render.asm render.cpp
