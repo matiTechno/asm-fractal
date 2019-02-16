@@ -6,10 +6,16 @@
 ; * child threads don't use stacks - pop / push / call/ ret can't be used in a thread
 ;       function
 
+%define ITERATIONS 800
+%define DP_ITERATIONS  __float64__(800.0)
+%define DP_VIEW_LEFT   __float64__(-0.711580)
+%define DP_VIEW_RIGHT  __float64__(-0.711562)
+%define DP_VIEW_TOP    __float64__(-0.252133)
+%define DP_VIEW_BOTTOM __float64__(-0.252143)
+
 section .bss
 
 ; maybe I could store these on stack but I find it more convenient this way
-
 ; bss is initialized to 0
 
 futex          resd 1
@@ -30,25 +36,11 @@ msg_error   db "1 or 3 arguments required - num_threads, width, height", 0xa
 msg_P6      db "P6 "
 filename    db "fractal.ppm", 0
 
-iterations dd 800
-
-view_left   dq -0.711580
-view_right  dq -0.711562
-view_top    dq  0.252133
-view_bottom dq  0.252143
-
-double_one    dq 1.0
-double_zero   dq 0.0
-double_max_u8 dq 255.0
-double_half   dq 0.5
-double_four   dq 4.0
-double_two    dq 2.0
+section .text
 
 global _start
 
-section .text
 _start:
-
     ; retrive number of threads, width and height from command line arguments
     pop rax
     mov dword [argc], eax
@@ -245,13 +237,16 @@ thread_work:
     ; calculate x0 and y0 position in target range using linear interpolation
 
     ; x0
-    movsd xmm2, [double_one]
+    mov rbx, __float64__(1.0) ; rbx is reserved
+    movq xmm2, rbx
     subsd xmm2, xmm0
-    movsd xmm3, [view_left]
+    mov rax, DP_VIEW_LEFT
+    movq xmm3, rax
     mulsd xmm2, xmm3
     ; xmm2 is reserved now
     movsd xmm3, xmm0
-    movsd xmm4, [view_right]
+    mov rax, DP_VIEW_RIGHT
+    movq xmm4, rax
     mulsd xmm3, xmm4
     addsd xmm2, xmm3
     movsd xmm0, xmm2 ; we don't need x scaling factor anymore
@@ -260,21 +255,23 @@ thread_work:
     ; do the same for y0
 
     ; y0
-    movsd xmm2, [double_one]
+    movq xmm2, rbx ; rbx can be reused
     subsd xmm2, xmm1
-    movsd xmm3, [view_top]
+    mov rax, DP_VIEW_TOP
+    movq xmm3, rax
     mulsd xmm2, xmm3
     movsd xmm3, xmm1
-    movsd xmm4, [view_bottom]
+    mov rax, DP_VIEW_BOTTOM
+    movq xmm4, rax
     mulsd xmm3, xmm4
     addsd xmm2, xmm3
     movsd xmm1, xmm2
 
     ; now xmm1 contains y0
 
-    mov r11d, 0               ; iteration variable
-    movsd xmm2, [double_zero] ; x variable
-    movsd xmm3, xmm2          ; y variable
+    mov r11d, 0      ; iteration variable
+    xorps xmm2, xmm2 ; x variable, zero
+    movsd xmm3, xmm2 ; y variable
 
     ; to sum up:
     ; xmm0 - x0
@@ -297,10 +294,12 @@ thread_work:
     addsd xmm6, xmm5
     ; xmm6 = x * x + y * y
     
-    ucomisd xmm6, [double_four]
+    mov rax, __float64__(4.0)
+    movq xmm7, rax
+    ucomisd xmm6, xmm7
     jae .end_loop_iter
 
-    cmp r11d, dword [iterations]
+    cmp r11d, ITERATIONS
     je .end_loop_iter
 
     ; C reference code
@@ -312,7 +311,9 @@ thread_work:
     subsd xmm6, xmm5
     addsd xmm6, xmm0
     ; xmm4 and xmm5 can be reused at this point, xmm6 is temp variable
-    mulsd xmm3, [double_two]
+    mov rax, __float64__(2.0)
+    movq xmm4, rax
+    mulsd xmm3, xmm4
     mulsd xmm3, xmm2
     addsd xmm3, xmm1
     movsd xmm2, xmm6
@@ -325,9 +326,12 @@ thread_work:
     ; calculate color - iteration / iterations
 
     cvtsi2sd xmm0, r11d
-    cvtsi2sd xmm1, [iterations]
+    mov rax, DP_ITERATIONS
+    movq xmm1, rax
     divsd xmm0, xmm1
-    mulsd xmm0, [double_max_u8]
+    mov rax, __float64__(255.0)
+    movq xmm1, rax
+    mulsd xmm0, xmm1
 
     ; oh man, what a bug - cvtss2si is performing rounding so we don't have to
     ; add 0.5 to the color value - if we do this when color == 255 we overflow and
@@ -405,7 +409,7 @@ write_int_space:
     mov rbx, 10 ; divisor
     mov r9, 0   ; length
 
-    ; note: we are writing the number in a reverse order
+    ; note: we are wmulsd raxriting the number in a reverse order
     ; that's why we start at the last element of a buffer and traverse down
 
     mov r15, string_buffer
