@@ -105,8 +105,8 @@ int main(int argc, const char** argv)
     bool set_affinity = false;
 
     // special case, enables realtime scheduling and launches as many worker threads
-    // as there are cpus available (system with 4 cores and hyper-threading has 8
-    // cpus)
+    // as there are cpus available - 1 (system with 4 cores and hyper-threading has 8
+    // cpus), main thread will also do the work
 
     if(num_threads == 0)
     {
@@ -130,6 +130,14 @@ int main(int argc, const char** argv)
             perror("sched_setscheduler()");
             return 0;
         }
+
+        // main thread will run on cpu0
+        cpu_set_t cpu_set;
+        CPU_ZERO(&cpu_set);
+        CPU_SET(0, &cpu_set);
+
+        ret = sched_setaffinity(0, sizeof(cpu_set_t), &cpu_set);
+        assert(ret != -1);
     }
 
     if(argc ==4)
@@ -152,7 +160,7 @@ int main(int argc, const char** argv)
 
     pthread_t threads[num_threads];
 
-    for(int i = 0; i < num_threads; ++i)
+    for(int i = 1; i < num_threads; ++i)
     {
         // by default pthread_create inherits scheduling attributes from the parent
 
@@ -178,7 +186,10 @@ int main(int argc, const char** argv)
         assert(!ret);
     }
 
-    for(int i = 0; i < num_threads; ++i)
+    // run work on main thread
+    thread_work(nullptr);
+
+    for(int i = 1; i < num_threads; ++i)
     {
         int ret = pthread_join(threads[i], nullptr);
         assert(!ret);
