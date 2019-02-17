@@ -103,6 +103,7 @@ int main(int argc, const char** argv)
     assert(result);
 
     bool set_affinity = false;
+    int max_priority;
 
     // special case, enables realtime scheduling and launches as many worker threads
     // as there are cpus available - 1 (system with 4 cores and hyper-threading has 8
@@ -113,7 +114,7 @@ int main(int argc, const char** argv)
         set_affinity = true;
         num_threads = get_nprocs();
 
-        int max_priority = sched_get_priority_max(SCHED_FIFO);
+        max_priority = sched_get_priority_max(SCHED_FIFO);
 
         assert(max_priority != -1);
 
@@ -176,6 +177,19 @@ int main(int argc, const char** argv)
             CPU_ZERO(&cpu_set);
             CPU_SET(i, &cpu_set);
             ret = pthread_attr_setaffinity_np(&attr, sizeof(cpu_set_t), &cpu_set);
+            assert(!ret);
+
+            ret = pthread_attr_setinheritsched(&attr, PTHREAD_EXPLICIT_SCHED);
+            assert(!ret);
+
+            ret = pthread_attr_setschedpolicy(&attr, SCHED_FIFO);
+            assert(!ret);
+
+            sched_param params;
+            // -1 to make sure that it does not block main thread
+            // I don't know if this problem exists, it is a guess
+            params.sched_priority = max_priority - 1;
+            ret = pthread_attr_setschedparam(&attr, &params);
             assert(!ret);
         }
 
