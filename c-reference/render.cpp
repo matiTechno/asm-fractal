@@ -6,6 +6,8 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <sys/sysinfo.h>
+#include <sched.h>
 
 struct Color
 {
@@ -100,6 +102,36 @@ int main(int argc, const char** argv)
     int result = sscanf(argv[1], "%d", &num_threads);
     assert(result);
 
+    bool set_affinity = false;
+
+    // special case, enables realtime scheduling and launches as many worker threads
+    // as there are cpus available (system with 4 cores and hyper-threading has 8
+    // cpus)
+
+    if(num_threads == 0)
+    {
+        set_affinity = true;
+        num_threads = get_nprocs();
+
+        int max_priority = sched_get_priority_max(SCHED_FIFO);
+
+        assert(max_priority != -1);
+
+        sched_param params;
+
+        params.sched_priority = max_priority;
+
+        int ret = sched_setscheduler(0, SCHED_FIFO, &params);
+
+        // this error is very likely to happen (running this program without sudo)
+        // so we exit gracefully
+        if(ret == -1)
+        {
+            perror("sched_setscheduler()");
+            return 0;
+        }
+    }
+
     if(argc ==4)
     {
         result = sscanf(argv[2], "%d", &_config.render_width);
@@ -122,7 +154,27 @@ int main(int argc, const char** argv)
 
     for(int i = 0; i < num_threads; ++i)
     {
-        int ret = pthread_create(&threads[i], nullptr, thread_work, nullptr);
+        // by default pthread_create inherits scheduling attributes from the parent
+
+        int ret;
+
+        pthread_attr_t attr;
+        ret = pthread_attr_init(&attr);
+        assert(!ret);
+
+        if(set_affinity)
+        {
+            cpu_set_t cpu_set;
+            CPU_ZERO(&cpu_set);
+            CPU_SET(i, &cpu_set);
+            ret = pthread_attr_setaffinity_np(&attr, sizeof(cpu_set_t), &cpu_set);
+            assert(!ret);
+        }
+
+        ret = pthread_create(&threads[i], &attr, thread_work, nullptr);
+        assert(!ret);
+
+        ret = pthread_attr_destroy(&attr);
         assert(!ret);
     }
 
