@@ -3,10 +3,10 @@
 ;       to other registers)
 ; * sizes of the string constants are hardcoded
 ; * there is no error checking, both for syscalls and command line arguments
-; * child threads don't use stacks - pop / push / call/ ret can't be used in a thread
-;       function
 
-%define ITERATIONS 800
+%define STACK_SIZE    1024
+%define PX_CHUNK_SIZE 24 ; 3 * PX_CHUNK_SIZE must be multiple of 8
+%define ITERATIONS    800
 %define DP_ITERATIONS  __float64__(800.0)
 %define DP_VIEW_LEFT   __float64__(-0.711580)
 %define DP_VIEW_RIGHT  __float64__(-0.711562)
@@ -114,13 +114,27 @@ _start:
 
 .create_threads:
 
-    mov rax, 56 ; clone
-    mov rdi, 10900h ; CLONE_THREAD | CLONE_VM | CLONE_SIGHAND
-    mov rsi, 0 ; no stack - we don't do anything with stack in a thread function
+    ; mmap - allocate thread stack
+    mov rax, 9
+    mov rdi, 0
+    mov rsi, STACK_SIZE
+    mov rdx, 0x3
+    mov r10, 0x22
+    mov r8, -1
+    mov r9, 0
     syscall
 
-    ; child thread path; jump must be performed, not a call - there is no stack
-    ; to store the return address
+    mov rsi, rax
+    ; stack grows downwards so we point to the highest possible address of the allocated
+    ; memory
+    add rsi, STACK_SIZE
+
+    mov rax, 56 ; clone
+    mov rdi, 10900h ; CLONE_THREAD | CLONE_VM | CLONE_SIGHAND
+    ; rsi is already set - stack pointer
+    syscall
+
+    ; child thread path
     cmp rax, 0
     je thread_work
 
@@ -187,34 +201,61 @@ exit:
     syscall
 
 ; note: we can't return from this function - there is nowhere to return
-; syscall exit is called to terminate
+; syscall exit is called to terminate (jmp is used to enter this function, not call)
 
 thread_work:
 
-    mov r9d, dword [pixel_count]
-    dec r9 ; index of the last element of image buffer
+    ; we use stack to store the chunk, rsp will point to the start of the chunk buffer
+    ; rbp to the end of it
+    mov rbp, rsp
+    sub rsp, PX_CHUNK_SIZE * 3
 
-.render_px:
-    ; I don't use local buffer technique here because as I tested on c-reference exe
-    ; setting buffer size to 1 does not decrease the performance and is equivalent to
-    ; this implementation (but I don't know why it is so, what about false sharing;
-    ; I plan to investigate it)
-    ; edit: it gives some performance but not quite as much as I would expect
+    mov r9d, dword [pixel_count]
+    xor r13, r13 ; if 1 this thread will wake main thread
+
+.render_chunk:
 
     ; this must be an atomic operation
     ; I checked how gcc __sync_fetch_and_add() looks under compiler explorer
     ; I checked how program behaves without this atomicity and there are corruptions,
     ; small black dots across the image
-    mov eax, 1
+
+    mov eax, PX_CHUNK_SIZE
     lock xadd dword[current_px_idx], eax
     cmp rax, r9
-    jg exit
+    jge .thread_exit
+    mov r15, rax ; save the index
 
-    mov r10, rax ; save the index
+    mov rax, r9
+    sub rax, r15
+    ; rax contains the number of pixels left to render
+
+    xor r10, r10 ; iterator
+
+    cmp rax, PX_CHUNK_SIZE
+    jle .last_chunk
+
+    mov r14, PX_CHUNK_SIZE ; how many pixels we have to render
+    jmp .render_px ; skip .last_chunk
+
+.last_chunk:
+
+    mov r14, rax
+    mov r13, 1
+
+    ; to sum up:
+    ; r9  - number of pixels of the image
+    ; r13 - if 1 wake the main thread on exit
+    ; r15 - index at which chunk is copied to the buffer
+    ; r10 - iterator (iterate over pixels in the chunk)
+    ; r14 - number of pixels we have to render
+
+.render_px:
 
     ; setting the dividend is quite tricky
     mov edx, 0
-    ; eax is already set
+    mov eax, r15d
+    add eax, r10d
     mov edi, dword [image_width]
     div edi
 
@@ -283,7 +324,7 @@ thread_work:
     ; now execute this loop - for more see C reference program
     ; while(x * x + y * y < 4.0 && iteration < config.iterations)
 
-.loop_iter:
+.escape_px:
 
     movsd xmm4, xmm2
     mulsd xmm4, xmm2
@@ -297,10 +338,10 @@ thread_work:
     mov rax, __float64__(4.0)
     movq xmm7, rax
     ucomisd xmm6, xmm7
-    jae .end_loop_iter
+    jae .done_escape_px
 
     cmp r11d, ITERATIONS
-    je .end_loop_iter
+    je .done_escape_px
 
     ; C reference code
     ; double x_temp = x * x - y * y + x0;
@@ -319,9 +360,9 @@ thread_work:
     movsd xmm2, xmm6
 
     inc r11d ; ++iteration
-    jmp .loop_iter
+    jmp .escape_px
 
-.end_loop_iter:
+.done_escape_px:
 
     ; calculate color - iteration / iterations
 
@@ -349,22 +390,49 @@ thread_work:
     cvtsd2si esi, xmm0
 
     ; calculate the address of the pixel
+
     ; offset
-    ; note: if the result is to big to fit into the eax, higher bits are stored in edx
+    ; note: if the result is too big to fit into the eax, higher bits are stored in edx
     ; (it is not the case here)
     mov eax, r10d
     mov edi, 3
     mul edi
     ; address
-    mov rdi, [buffer]
+    mov rdi, rsp
     add rdi, rax
 
     mov byte [rdi]    , sil
     mov byte [rdi + 1], sil
     mov byte [rdi + 2], sil
 
-    cmp r10, r9
+    inc r10
+    cmp r10, r14
     jne .render_px
+
+    mov rdi, rsp ; start of the chunk buffer
+
+    mov eax, r15d
+    mov edx, 3
+    mul edx
+    mov rdx, [buffer]
+    add rdx, rax ; location we copy pixels to
+
+.copy_chunk:
+
+    mov rsi, [rdi] ; 8 bytes of data we want to copy to buffer
+    mov [rdx], rsi ; copy!
+
+    add rdi, 8
+    add rdx, 8
+    cmp rdi, rbp
+    jne .copy_chunk
+
+    jmp .render_chunk
+
+.thread_exit:
+    
+    cmp r13, 1
+    jne exit
 
     ; futex, only the thread that rendered the last pixel will wake the main thread
     inc dword [futex]
