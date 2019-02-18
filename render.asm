@@ -475,7 +475,6 @@ str_to_int:
     inc rdi
     jmp .loop
 
-
 .return:
     ret
 
