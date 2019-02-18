@@ -4,9 +4,11 @@
 ; * sizes of the string constants are hardcoded
 ; * there is no error checking, both for syscalls and command line arguments
 
-%define STACK_SIZE    1024
-%define PX_CHUNK_SIZE 24 ; 3 * PX_CHUNK_SIZE must be multiple of 8
-%define ITERATIONS    800
+%define STRING_BUFFER_SIZE 1024
+%define PX_CHUNK_SIZE      24 ; 3 * PX_CHUNK_SIZE must be multiple of 8
+; we only need to store pixel chunk buffer on the stack, nothing more
+%define STACK_SIZE         PX_CHUNK_SIZE * 3 ; 3 bytes per pixel
+%define ITERATIONS         800
 %define DP_ITERATIONS  __float64__(800.0)
 %define DP_VIEW_LEFT   __float64__(-0.711580)
 %define DP_VIEW_RIGHT  __float64__(-0.711562)
@@ -23,10 +25,9 @@ current_px_idx resd 1
 pixel_count    resd 1
 num_threads    resd 1
 argc           resd 1
-fd             resd 1
 image_width    resd 1
 image_height   resd 1
-string_buffer  resb 1024 ; don't change the size - one function relies on it
+string_buffer  resb STRING_BUFFER_SIZE
 buffer         resq 1
 
 section .data
@@ -97,6 +98,12 @@ _start:
     mov dword [pixel_count], eax ; store this value - we will use it later
     mov edi, 3
     mul edi
+
+    ; threads are copying data to the main buffer in chunks of 8 bytes, this is to assure
+    ; that we won't get segmentation fault on the last copy if there is less data
+    ; to copy than 8 bytes
+    add eax, 7
+
     mov esi, eax ; store the results in rsi
 
     mov rax, 9
@@ -146,8 +153,9 @@ _start:
     mov rax, 202
     mov rdi, futex
     mov rsi, 128 ; FUTEX_PRIVATE_FLAG | FUTEX_WAIT
-    ; if *futex and this value are different - syscall returns immediately
-    ; this is useful if the threads would terminate before this syscall is issued
+    ; if [futex] and this value are different - syscall returns immediately
+    ; this is useful if the child threads terminate before this syscall is issued
+    ; (last child thread increments [futex] and calls futex wake)
     mov rdx, 0   
     mov r10, 0   ; timespec* timeout
     syscall
@@ -159,11 +167,11 @@ _start:
     mov rdx, 644o  ; mode (permissions)
     syscall
 
-    mov [fd], eax ; save the file descriptor
+    mov edi, eax ; save the file descriptor
 
     ; write to file - header
     mov rax, 1
-    mov edi, dword [fd]
+    ; rdi is already set - file descriptor
     mov rsi, msg_P6
     mov rdx, 3
     syscall
@@ -177,22 +185,20 @@ _start:
 
     ; write to file - buffer
     ; calculate byte size
-    mov eax, dword [image_width]
-    mov edi, dword [image_height]
-    mul edi
-    mov edi, 3
-    mul edi
+    mov eax, dword [pixel_count]
+    mov esi, 3
+    mul esi
     mov edx, eax
 
     mov rax, 1
-    mov edi, dword [fd]
+    ; rdi is already set
     mov rsi, [buffer]
     ; rdx is already set
     syscall
 
     ; close file
     mov rax, 3
-    mov edi, dword [fd]
+    ; rdi is already set
     syscall
     
 exit:
@@ -202,12 +208,12 @@ exit:
 
 ; note: we can't return from this function - there is nowhere to return
 ; syscall exit is called to terminate (jmp is used to enter this function, not call)
+; we can't use call because there is no place on the stack for the return address,
+; stack size exactly matches the size required to store pixel chunk buffer
 
 thread_work:
 
     ; we use stack to store the chunk, rsp will point to the start of the chunk buffer
-    ; rbp to the end of it
-    mov rbp, rsp
     sub rsp, PX_CHUNK_SIZE * 3
 
     mov r9d, dword [pixel_count]
@@ -221,7 +227,7 @@ thread_work:
     ; small black dots across the image
 
     mov eax, PX_CHUNK_SIZE
-    lock xadd dword[current_px_idx], eax
+    lock xadd dword [current_px_idx], eax
     cmp rax, r9
     jge .thread_exit
     mov r15, rax ; save the index
@@ -239,7 +245,6 @@ thread_work:
     jmp .render_px ; skip .last_chunk
 
 .last_chunk:
-
     mov r14, rax
     mov r13, 1
 
@@ -412,20 +417,28 @@ thread_work:
     mov rdi, rsp ; start of the chunk buffer
 
     mov eax, r15d
-    mov edx, 3
-    mul edx
-    mov rdx, [buffer]
-    add rdx, rax ; location we copy pixels to
+    mov ebx, 3
+    mul ebx
+    mov rbx, [buffer]
+    ; location we copy pixels to, it should not be rdx because it gets overwritten
+    ; by the following mul instructions
+    add rbx, rax
+
+    mov eax, r14d
+    mov ecx, 3
+    mul ecx
+    mov rcx, rsp
+    add rcx, rax ; we can only copy next 8 bytes of data if rdi is less than this
 
 .copy_chunk:
 
     mov rsi, [rdi] ; 8 bytes of data we want to copy to buffer
-    mov [rdx], rsi ; copy!
+    mov [rbx], rsi ; copy!
 
     add rdi, 8
-    add rdx, 8
-    cmp rdi, rbp
-    jne .copy_chunk
+    add rbx, 8
+    cmp rdi, rcx
+    jl .copy_chunk
 
     jmp .render_chunk
 
@@ -441,7 +454,6 @@ thread_work:
     mov rsi, 129 ; FUTEX_PRIVATE_FLAG | FUTEX_WAKE
     mov rdx, 1 ; number of waiters to wake
     syscall
-
     jmp exit
 
 ; rax should be set to address of the target string
@@ -481,7 +493,7 @@ write_int_space:
     ; that's why we start at the last element of a buffer and traverse down
 
     mov r15, string_buffer
-    add r15, 1023
+    add r15, STRING_BUFFER_SIZE - 1
 
     mov byte [r15], 32 ; end the string with a space
     inc r9
