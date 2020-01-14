@@ -10,21 +10,6 @@
 
 // todo, texture tiling, processing pixels spatially close to each other could improve performance
 
-struct Color
-{
-    unsigned char r;
-    unsigned char g;
-    unsigned char b;
-    unsigned char _pad; // so chunk can be aligned to a cache line size
-};
-
-struct Color_store
-{
-    unsigned char r;
-    unsigned char g;
-    unsigned char b;
-};
-
 struct Config
 {
     int render_width = 1920;
@@ -37,22 +22,22 @@ struct Config
 
     int iterations = 800;
 
-} static _config;
+} static _g_config;
 
 int _g_progress = 0;
-Color* _g_image_buf;
+unsigned char* _g_image_buf; // one channel per color, grayscale image
 
-#define PX_CHUNK_SIZE 16
+#define PX_CHUNK_SIZE 64
 #define SIMD_SIZE 4
 
 void* thread_work(void*)
 {
-    Config config = _config;
+    Config config = _g_config;
     int pixel_count = config.render_width * config.render_height;
-    Color local_buf[PX_CHUNK_SIZE];
-    assert(sizeof(local_buf) % 64 == 0);
+    unsigned char local_buf[PX_CHUNK_SIZE];
+    assert(sizeof(local_buf) % 64 == 0); // align to cache line size
     assert(PX_CHUNK_SIZE % SIMD_SIZE == 0); // align to SIMD size
-    Color* image_buf = _g_image_buf;
+    unsigned char* image_buf = _g_image_buf;
 
     __m256d maxX = _mm256_set1_pd(config.render_width - 1);
     __m256d maxY = _mm256_set1_pd(config.render_height - 1);
@@ -135,13 +120,13 @@ void* thread_work(void*)
             iteration = _mm256_mul_pd(c255, iteration);
             iteration = _mm256_div_pd(iteration, max_iterations);
 
-            double* color_data = (double*)&iteration;
-            Color* cdst = local_buf + px_chunk_id;
+            double* iteration_data = (double*)&iteration;
+            unsigned char* cbuf = local_buf + px_chunk_id;
 
-            for(int i = 0; i < SIMD_SIZE; ++i, ++cdst)
-                cdst->r = cdst->g = cdst->b = color_data[i];
+            for(int i = 0; i < SIMD_SIZE; ++i)
+                cbuf[i] = iteration_data[i];
         }
-        memcpy(image_buf + start, local_buf, sizeof(Color) * PX_CHUNK_SIZE);
+        memcpy(image_buf + start, local_buf, sizeof(local_buf));
     }
     return nullptr;
 }
@@ -161,21 +146,21 @@ int main(int argc, const char** argv)
 
     if(argc ==4)
     {
-        result = sscanf(argv[2], "%d", &_config.render_width);
+        result = sscanf(argv[2], "%d", &_g_config.render_width);
         assert(result);
-        result = sscanf(argv[3], "%d", &_config.render_height);
+        result = sscanf(argv[3], "%d", &_g_config.render_height);
         assert(result);
     }
     else
-        printf("rendering at the default resolution %dx%dpx\n", _config.render_width, _config.render_height);
+        printf("rendering at the default resolution %dx%dpx\n", _g_config.render_width, _g_config.render_height);
 
-    int pixel_count = _config.render_width * _config.render_height;
+    int pixel_count = _g_config.render_width * _g_config.render_height;
 
     {
         // align to chunk_size to simplify threads memcpy operation
         int alloc_size = ((pixel_count + PX_CHUNK_SIZE - 1) / PX_CHUNK_SIZE) * PX_CHUNK_SIZE;
         // align to 64 (cache line size) to avoid false sharing on writes
-        int c = posix_memalign((void**)&_g_image_buf, 64, sizeof(Color) * alloc_size);
+        int c = posix_memalign((void**)&_g_image_buf, 64, alloc_size);
         assert(!c);
         assert(_g_image_buf);
     }
@@ -196,30 +181,25 @@ int main(int argc, const char** argv)
         assert(!ret);
     }
 
-    int fd = open("fractal.ppm", O_WRONLY | O_TRUNC | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+    int fd = open("fractal.pgm", O_WRONLY | O_TRUNC | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 
     assert(fd != -1);
 
     {
         char buf[1024];
-        snprintf(buf, sizeof(buf), "P6 %d %d 255 ", _config.render_width, _config.render_height);
+        snprintf(buf, sizeof(buf), "P5 %d %d 255 ", _g_config.render_width, _g_config.render_height);
         int len = strlen(buf);
         int bytes_written = write(fd, buf, len);
         assert(bytes_written == len);
     }
 
-    Color_store* buf = (Color_store*)malloc(sizeof(Color_store) * pixel_count);
+    unsigned char* buf_out = (unsigned char*)malloc(pixel_count);
 
     for(int i = 0; i < pixel_count; ++i)
-    {
-        buf[i].r = _g_image_buf[i].r;
-        buf[i].g = _g_image_buf[i].g;
-        buf[i].b = _g_image_buf[i].b;
-    }
+        buf_out[i] = _g_image_buf[i];
 
-    int byte_size = sizeof(Color_store) * pixel_count;
-    int bytes_written = write(fd, buf, byte_size);
-    assert(bytes_written == byte_size);
+    int bytes_written = write(fd, buf_out, pixel_count);
+    assert(bytes_written == pixel_count);
     close(fd);
     return 0;
 }
