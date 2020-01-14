@@ -1,4 +1,5 @@
 c-reference/fractal.ppm
+c-reference/fractal.pgm
 c-reference/render
 c-reference/render.asm
 render.o

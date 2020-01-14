@@ -214,8 +214,7 @@ int main(int argc, const char** argv)
             unsigned char* dst = buf_out + (y * output_width) + x;
             int tile_id = ((y / TILE_WIDTH_PX) * tiles_per_row) + (x / TILE_WIDTH_PX);
             int tile_px_id = (y % TILE_WIDTH_PX) * TILE_WIDTH_PX + x  % TILE_WIDTH_PX;
-            unsigned char pixel = _g_image_buf[tile_id * TILE_AREA_PX + tile_px_id];
-            *dst = pixel;
+            *dst = _g_image_buf[tile_id * TILE_AREA_PX + tile_px_id];
         }
     }
 
