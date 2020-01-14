@@ -6,15 +6,26 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <immintrin.h>
+
+// todo, texture tiling, processing pixels spatially close to each other could improve performance
 
 struct Color
 {
-    char r;
-    char g;
-    char b;
+    unsigned char r;
+    unsigned char g;
+    unsigned char b;
+    unsigned char _pad; // so chunk can be aligned to a cache line size
 };
 
-struct
+struct Color_store
+{
+    unsigned char r;
+    unsigned char g;
+    unsigned char b;
+};
+
+struct Config
 {
     int render_width = 1920;
     int render_height = 1080;
@@ -28,63 +39,110 @@ struct
 
 } static _config;
 
-static int _progress = 0;
-static Color* _image_buf;
+int _g_progress = 0;
+Color* _g_image_buf;
 
-#define PX_CHUNK_SIZE 24
+#define PX_CHUNK_SIZE 16
+#define SIMD_SIZE 4
 
 void* thread_work(void*)
 {
-    int pixel_count = _config.render_width * _config.render_height;
+    Config config = _config;
+    int pixel_count = config.render_width * config.render_height;
     Color local_buf[PX_CHUNK_SIZE];
+    assert(sizeof(local_buf) % 64 == 0);
+    assert(PX_CHUNK_SIZE % SIMD_SIZE == 0); // align to SIMD size
+    Color* image_buf = _g_image_buf;
+
+    __m256d maxX = _mm256_set1_pd(config.render_width - 1);
+    __m256d maxY = _mm256_set1_pd(config.render_height - 1);
+    __m256d left = _mm256_set1_pd(config.left);
+    __m256d top = _mm256_set1_pd(config.top);
+    __m256d right = _mm256_set1_pd(config.right);
+    __m256d bottom = _mm256_set1_pd(config.bottom);
+    __m256d c1 = _mm256_set1_pd(1.0);
+    __m256d c2 = _mm256_set1_pd(2.0);
+    __m256d c4 = _mm256_set1_pd(4.0);
+    __m256d c255 = _mm256_set1_pd(255.0);
+    __m256d max_iterations = _mm256_set1_pd(config.iterations);
 
     while(true)
     {
-        int start = __sync_fetch_and_add(&_progress, PX_CHUNK_SIZE);
+        int start = __sync_fetch_and_add(&_g_progress, PX_CHUNK_SIZE);
 
         if(start >= pixel_count)
             break;
 
-        int max_pixels_to_render = pixel_count - start;
-
-        int pixels_to_render = PX_CHUNK_SIZE > max_pixels_to_render ? max_pixels_to_render
-                               : PX_CHUNK_SIZE;
-
-        for(int i = 0 ; i < pixels_to_render; ++i)
+        for(int px_chunk_id = 0 ; px_chunk_id < PX_CHUNK_SIZE; px_chunk_id += SIMD_SIZE)
         {
-            int idx = start + i;
+            double px_x[4] __attribute__((aligned(32)));
+            double px_y[4] __attribute__((aligned(32)));
 
-            int px_x = idx % _config.render_width;
-            int px_y = idx / _config.render_width;
-
-            double xcoeff = (double)px_x / (_config.render_width - 1);
-            double ycoeff = (double)px_y / (_config.render_height - 1);
-
-            double x0 = (1.0 - xcoeff) * _config.left + xcoeff * _config.right;
-            double y0 = (1.0 - ycoeff) * _config.top + ycoeff * _config.bottom;
-
-            int iteration = 0;
-            double x = 0.0;
-            double y = 0.0;
-
-            while(x * x + y * y < 4.0 && iteration < _config.iterations)
+            for(int i = 0; i < SIMD_SIZE; ++i)
             {
-                double x_temp = x * x - y * y + x0;
-                y = 2.0 * x * y + y0;
-                x = x_temp;
-                ++iteration;
+                px_x[i] = (start + px_chunk_id + i) % config.render_width;
+                px_y[i] = (start + px_chunk_id + i) / config.render_width;
             }
 
-            Color color;
-            color.r = color.g = color.b = 255.0 * (double)iteration / _config.iterations
-                + 0.5;
+            __m256d xcoeff = _mm256_load_pd(px_x);
+            xcoeff = _mm256_div_pd(xcoeff, maxX);
+            __m256d ycoeff = _mm256_load_pd(px_y);
+            ycoeff = _mm256_div_pd(ycoeff, maxY);
 
-            local_buf[i] = color;
+            __m256d x0 = _mm256_sub_pd(c1, xcoeff);
+            x0 = _mm256_mul_pd(x0, left);
+            x0 = _mm256_fmadd_pd(xcoeff, right, x0);
+
+            __m256d y0 = _mm256_sub_pd(c1, ycoeff);
+            y0 = _mm256_mul_pd(y0, top);
+            y0 = _mm256_fmadd_pd(ycoeff, bottom, y0);
+
+            __m256d iteration = _mm256_setzero_pd();
+            __m256d x = _mm256_setzero_pd();
+            __m256d y = _mm256_setzero_pd();
+
+            for(int i = 0; i < config.iterations; ++i)
+            {
+                // if(x*x + y*y < 4.0)
+                __m256d cond = _mm256_mul_pd(x, x);
+                cond = _mm256_fmadd_pd(y, y, cond);
+                cond = _mm256_cmp_pd(cond, c4, _CMP_LT_OQ);
+                // first 4 bytes in a mask are set to MSBits of elements in a vector, rest is set to 0
+                // normally MSB of a double type is a sign bit, but previous cmp instruction set all bits in the vector to either 1 or 0
+                // so movemask only makes sense here because it is used after cmp
+                // in the case of simd, break only if ALL elements in the vector failed the condition
+                int mask = _mm256_movemask_pd(cond);
+                if(mask == 0)
+                    break;
+
+                //double x_tmp = x * x - y * y + x0;
+                __m256d x_tmp = _mm256_fmadd_pd(x, x, x0);
+                x_tmp = _mm256_fnmadd_pd(y, y, x_tmp);
+
+                // y = 2.0 * x * y + y0;
+                y = _mm256_mul_pd(x, y); // note, y changes
+                y = _mm256_fmadd_pd(c2, y, y0);
+
+                x = x_tmp;
+
+                // update iteration counter only a if pixel did not escape
+                // reuse x_tmp
+                x_tmp = _mm256_and_pd(c1, cond);
+                iteration = _mm256_add_pd(iteration, x_tmp);
+            }
+
+            // convert to u8 suitable representation
+            iteration = _mm256_mul_pd(c255, iteration);
+            iteration = _mm256_div_pd(iteration, max_iterations);
+
+            double* color_data = (double*)&iteration;
+            Color* cdst = local_buf + px_chunk_id;
+
+            for(int i = 0; i < SIMD_SIZE; ++i, ++cdst)
+                cdst->r = cdst->g = cdst->b = color_data[i];
         }
-
-        memcpy(_image_buf + start, local_buf, sizeof(Color) * pixels_to_render);
+        memcpy(image_buf + start, local_buf, sizeof(Color) * PX_CHUNK_SIZE);
     }
-
     return nullptr;
 }
 
@@ -98,25 +156,29 @@ int main(int argc, const char** argv)
 
     int num_threads;
     int result = sscanf(argv[1], "%d", &num_threads);
+    num_threads -= 1; // subtract main thread
     assert(result);
 
     if(argc ==4)
     {
         result = sscanf(argv[2], "%d", &_config.render_width);
         assert(result);
-
         result = sscanf(argv[3], "%d", &_config.render_height);
         assert(result);
     }
     else
-    {
-        printf("rendering at the default resolution %dx%dpx\n", _config.render_width,
-                _config.render_height);
-    }
+        printf("rendering at the default resolution %dx%dpx\n", _config.render_width, _config.render_height);
 
     int pixel_count = _config.render_width * _config.render_height;
-    _image_buf = (Color*)malloc(sizeof(Color) * pixel_count);
-    assert(_image_buf);
+
+    {
+        // align to chunk_size to simplify threads memcpy operation
+        int alloc_size = ((pixel_count + PX_CHUNK_SIZE - 1) / PX_CHUNK_SIZE) * PX_CHUNK_SIZE;
+        // align to 64 (cache line size) to avoid false sharing on writes
+        int c = posix_memalign((void**)&_g_image_buf, 64, sizeof(Color) * alloc_size);
+        assert(!c);
+        assert(_g_image_buf);
+    }
 
     pthread_t threads[num_threads];
 
@@ -126,32 +188,38 @@ int main(int argc, const char** argv)
         assert(!ret);
     }
 
+    thread_work(nullptr);
+
     for(int i = 0; i < num_threads; ++i)
     {
         int ret = pthread_join(threads[i], nullptr);
         assert(!ret);
     }
 
-    int fd = open("fractal.ppm", O_WRONLY | O_TRUNC | O_CREAT,
-                  S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+    int fd = open("fractal.ppm", O_WRONLY | O_TRUNC | O_CREAT, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 
     assert(fd != -1);
 
-    char buf[1024];
     {
-        snprintf(buf, sizeof(buf), "P6 %d %d 255 ", _config.render_width,
-                 _config.render_height);
-
+        char buf[1024];
+        snprintf(buf, sizeof(buf), "P6 %d %d 255 ", _config.render_width, _config.render_height);
         int len = strlen(buf);
         int bytes_written = write(fd, buf, len);
         assert(bytes_written == len);
     }
 
-    int byte_size = sizeof(Color) * pixel_count;
-    int bytes_written = write(fd, _image_buf, byte_size);
-    assert(bytes_written == byte_size);
+    Color_store* buf = (Color_store*)malloc(sizeof(Color_store) * pixel_count);
 
-    free(_image_buf);
+    for(int i = 0; i < pixel_count; ++i)
+    {
+        buf[i].r = _g_image_buf[i].r;
+        buf[i].g = _g_image_buf[i].g;
+        buf[i].b = _g_image_buf[i].b;
+    }
+
+    int byte_size = sizeof(Color_store) * pixel_count;
+    int bytes_written = write(fd, buf, byte_size);
+    assert(bytes_written == byte_size);
     close(fd);
     return 0;
 }

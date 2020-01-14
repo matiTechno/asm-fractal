@@ -1,11 +1,14 @@
-deb:
-	g++ -std=c++14 -Wall -Wextra -g -o render render.cpp -pthread
+common = -mfma -Wall -Wextra -pthread -fno-exceptions -fno-rtti render.cpp
+rel = -O3 -DNDEBUG
+
+debug:
+	g++ $(common) -g -o render
 
 rel:
-	g++ -std=c++14 -Wall -Wextra -O3 -DNDEBUG -o render render.cpp -pthread
+	g++ $(common) $(rel) -o render
 
-clango3:
-	clang++ -std=c++14 -Wall -Wextra -O3 -DNDEBUG -o render render.cpp -pthread
+clang_rel:
+	clang++ $(common) $(rel) -o render
 
 asm:
-	g++ -std=c++14 -Wall -Wextra -g -S -masm=intel -o render.asm render.cpp
+	g++ $(common) $(rel)  -S -masm=intel -o render.asm
